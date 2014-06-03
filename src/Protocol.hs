@@ -5,8 +5,11 @@
 module Protocol where
 
 import Data.Bits
+import qualified Data.Map as M
 import Data.Serialize
 import qualified Data.ByteString as B
+import Data.Traversable
+import Prelude hiding (forM, forM_, mapM, mapM_)
 import Pipes
 import Pipes.Concurrency
 import System.Random.MWC
@@ -17,7 +20,7 @@ data Packet
   = Packet {
     pktSeqNo :: !Int,
     pktAckNo :: !Int,
-    pktFlags :: !Int,
+    pktFlags :: ![PacketFlag],
     pktPayload :: !B.ByteString
   }
   deriving (Show, Eq)
@@ -29,6 +32,7 @@ data PacketFlag
   | RST
   | SYN
   | FIN
+  | ECHO
   deriving (Show, Eq, Ord, Enum)
 
 data ConnOption
@@ -45,6 +49,7 @@ data ConnectionError
   | TooManyRetries
   deriving (Show, Eq, Ord, Typeable)
 
+-- Those things need to be put into the serializer
 buildFlags :: Enum a => [a] -> Int
 buildFlags = foldr setFlag 0
 
@@ -64,6 +69,7 @@ delFlag = clearBit . fromEnum
 
 type Mailbox a = (P.Input a, P.Output a)
 
+-- Used temporarily.
 rightOrThrow :: Typeable e => Either e a -> IO a
 rightOrThrow = either throwIO return
 
@@ -253,3 +259,40 @@ recvIf check runInput = do
       -- Either accepted or exhausted.
       return mbA
 
+sendStep1
+  :: P.Output Packet
+  -- ^ Endpoint
+  -> STM Int
+  -- ^ Seq No generator
+  -> B.ByteString
+  -- ^ Payload (already cut into correct size)
+  -> TVar (Map Int Packet)
+  -- ^ Output queue
+  -> STM Bool
+  -- ^ False if Endpoint closed
+sendStep1 pktOut genSeqNo payload outQ = do
+  seqNo <- genSeqNo
+  let pkt = Packet seqNo (-1) [] payload
+  modifyTVar outQ $ M.insert seqNo pkt
+  T.send pktOut pkt
+
+resend pktOut outQ = all <$> mapM (T.send pktOut) outQ
+
+recvOnce pktOut (Packet {..})@pkt genSeqNo inQ outQ
+  | isData pktFlags = do
+    -- ^ Got data
+    mbInfo <- M.lookup pktSeqNo <$> readTVar inQ
+    case mbInfo of
+      Nothing -> do
+        -- Haven't send a ACK-ECHO yet.
+        seqNo <- genSeqNo
+        let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
+        modifyTVar inQ $ M.insert pktSeqNo (pkt, replyPkt)
+      Just (_, replyPkt) -> do
+        -- Resend ACK-ECHO
+  | isAckEcho pktFlags = do
+    -- ^ ACK-ECHO
+    modifyTVar outQ $ M.delete pktActNo
+    T.send Packet
+  | isAck = return ()
+    -- ^ plain ACK: do nothing
