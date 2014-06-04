@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildcards, DeriveDataTypeable, ScopedTypeVariable #-}
+{-# LANGUAGE RecordWildCards, DeriveDataTypeable, ScopedTypeVariables #-}
 
 -- Pipes-based UDP-to-reliable-protocol adapter
 
@@ -49,36 +49,6 @@ data ConnectionError
   | TooManyRetries
   deriving (Show, Eq, Ord, Typeable)
 
--- Those things need to be put into the serializer
-buildFlags :: Enum a => [a] -> Int
-buildFlags = foldr setFlag 0
-
-hasFlags :: Enum a => [a] -> Int -> Bool
-hasFlags xs flag = foldr combine True xs
- where
-  combine x out = hasFlag x flag && out
-
-hasFlag :: Enum a => a -> Int -> Bool
-hasFlag = testBit . fromEnum
-
-setFlag :: Enum a => a -> Int -> Int
-setFlag = setBit . fromEnum
-
-delFlag :: Enum a => a -> Int -> Int
-delFlag = clearBit . fromEnum
-
-type Mailbox a = (P.Input a, P.Output a)
-
--- Used temporarily.
-rightOrThrow :: Typeable e => Either e a -> IO a
-rightOrThrow = either throwIO return
-
-justOrThrow :: Typeable e => e -> Maybe a -> IO a
-justOrThrow e = maybe (throwIO e) return
-
-nothingOrThrow :: Typeable e => Maybe e -> IO ()
-nothingOrThrow = maybe (return ()) throwIO
-
 establish
   :: ConnOption
   -- ^ Options?
@@ -87,179 +57,34 @@ establish
   -> IO (Mailbox B.ByteString)
   -- ^ Connected endpoints. Assume that bytestrings are already split into
   -- smaller pieces.
-establish (ConnOption {..}) (pktIn, pktOut)@pktMailbox
+establish (ConnOption {..}) (pktIn, pktOut)@pktMailbox = do
+  inQ <- newTVarIO M.empty
+  outQ <- newTVarIO M.empty
+  deliveryQ <- newTVarIO M.empty
+  lastDeliveredSeqNo <- newTVarIO 0
+  lastUsedSeqNo <- newTVarIO 0
 
-  | optIsInitiator = do
-    -- SYN
-    initSeqNo <- uniform optRandGen :: IO Int
-    let synPkt = mkSynPacket initSeqNo
-        checkSynAck = isSynAckFor initSeqNo
-    synAckPkt <- join $ rightOrThrow <$> sendRecvWithRetry pktMailbox synPkt
-      optTimeoutMicros optRetryLimit checkSynAck
-    -- ^ Client sends SYN and waits for server's SYN-ACK response.
-    let ackPkt = mkAckPacket (initSeqNo + 1) (pkgAckNo synAckPkt)
-        isNotSynAck pkt = pkt /= synAckPkt
+  (bsIn, bsOut) <- spawn P.Unbounded
 
-    join $ nothingOrThrow <$> atomically $ sendUntil pktMailbox ackPkt
-      retryLimit isNotThatSynAck
-    -- ^ Client sends ACK.
-    
-    (bsIn, bsOut, bsClose)@bsMailbox <- P.spawn' P.Single
-    runDataLoop bsMailbox (initSeqNo + 2)
-    return bsMailbox
+  let
+    genSeqNo = modifyTVar' lastUsedSeqNo (+1) *> readTVar lastUsedSeqNo
+    checkDelivery = packetIsDelivered lastDeliverySeqNo
+    deliver = deliverPacket lastDeliveredSeqNo deliveryQ bsOut
 
-  | otherwise = do
-    synPkt <- join $ justOrThrow PeerClosed <$> atomically $ P.recv pktIn
-    -- ^ Server waits for client's first SYN.
-    initSeqNo <- uniform optRandGen :: IO Int
-    let ackPkt = mkAckSynPacket initSeqNo (pkgSeqNo synPkt)
-        checkAck = isAckFor initSeqNo
-    ackPkt <- join $ rightOrThrow <$> sendRecvWithRetry pktMailbox ackPkt 
-      optTimeoutMicros optRetryLimit checkAck
-    -- ^ Server sends SYN-ACK and waits for ACK.
+  readPktT <- async $ forever $ atomically $ do
+    Just pkt <- T.recv pktIn
+    onPacket pktOut pkt genSeqNo checkDelivery deliver inQ outQ
 
-    (bsIn, bsOut, bsClose)@bsMailbox <- P.spawn' P.Single
-    runDataLoop bsMailbox (initSeqNo + 1)
-    return bsMailbox
+  resendPktT <- async $ forever $ atomically $
+    resendAll pktOut inQ outQ
 
- where
-  mkSynPacket seqNo = Packet seqNo (-1) (buildFlags [SYN]) B.empty
-  mkAckSynPacket seqNo ackNo =
-    Packet seqNo ackNo (buildFlags [ACK, SYN]) B.empty
-  mkAckPacket seqNo ackNo = Packet seqNo ackNo (buildFlags [ACK]) B.empty
+  writePktT <- async $ forever $ atomically $ do
+    Just bs <- T.recv bsIn
+    sendData pktOut genSeqNo bs outQ
 
-  isSynAckFor synSeqNo (Packet {..})@pkt =
-    isAckFor synSeqNo pkt &&
-    hasFlags [SYN] pktFlag
+  return (bsIn, bsOut)
 
-  isAckFor seqNo (Packet {..}) =
-    seqNo == pktAckNo &&
-    hasFlags [ACK] pktFlag
-
-  runDataLoop (bsIn, bsOut, bsClose) seqNoStart = do
-    outQueue <- newTVarIO M.empty
-    inQueue <- newTVarIO M.empty
-    lastDelivery <- newTVarIO (-1)
-    -- ^ Last seqNo that was delivered to the application
-    nextSeqNo <- newTVarIO seqNoStart
-    bsInT <- async $ bsToPacket nextSeqNo
-    bsOutT <- async $ packetToBs nextSeqNo
-   where
-    -- Just send once and store into the out queue waiting for ACKs.
-    -- Another thread will be responsible for resending.
-    bsToPacket nextSeqNo = do
-      goNext <- atomically $ do
-        mbBs <- P.recv bsIn
-        case mbBs of
-          Nothing ->
-            -- Exhausted. Send FIN.
-            shutdown
-            return (return ())
-          Just bs -> do
-            seqNo <- readTVar nextSeqNo
-            writeTVar nextSeqNo $! seqNo + 1
-            let pkt = Packet seqNo (-1) (buildFlags []) bs
-            modifyTVar outQueue $ M.insert seqNo pkt
-            return $ bsToPacket nextSeqNo
-      goNext
-
-    -- Handles incoming packets.
-    packetToBs = do
-      goNext <- atomically $ do
-        mbPkt <- P.recv pktIn
-        case mbPkt of
-          Nothing ->
-            -- Exhausted. Close this side.
-            bsClose
-            return (return ())
-          Just pkt@(Packet {..}) -> do
-            lastNo <- readTVar lastDelivery
-            if pkgSeqNo <= lastNo
-              then do
-                -- Already handled. Ignore that if it's an ACK, or send an
-                -- ACK if it's a data packet.
-                when (not $ hasFlag ACK pktFlags) $ sendAckFor pkt
-              else do
-                when (hasFlag ACK pktFlags) $
-                  -- Got ACK: remove that pkt in the outQueue
-                  modifyTVar outQueue $ M.delete pktAckNo
-                -- Store it into the inQueue and check for delivery
-                modifyTVar inQueue $ M.insert pktSeqNo pkt
-            return packetToBs
-      goNext
-
-shutdown = error "Shutdown not implemented"
-
--- Data sender need to use timeout to poll for acks.
-sendRecvWithRetry
-  :: Mailbox Packet
-  -- ^ Packet side
-  -> Packet
-  -- ^ Packet to send
-  -> Int
-  -- ^ Timeout in microseconds
-  -> Int
-  -- ^ Allowed retries
-  -> (Packet -> Bool)
-  -- ^ Accept if True, and continue to wait if False
-  -> IO (Either ConnectionError Packet)
-
-sendRecvWithRetry (pktIn, pktOut) pkt waitMicros retryLimit pktCheck
-  = go 0
- where
-  go retries
-    | retries >= retryLimit = return $ Left TooManyRetries
-    | otherwise = do
-      runEffect $ yield pkt >-> P.toOutput pktOut
-      mmPkt <- timeout waitMicros $ atomically $ recvIf pktCheck (P.recv pktIn)
-      case mmPkt of
-        Nothing ->
-          -- Timeout
-          go $ retryNo + 1
-        Just Nothing ->
-          return $ Left PeerClosed
-        Just (Just pkt) ->
-          return $ Right pkt
-
--- ACK sender needs to continue send until the ACK-ed packet is not seen again.
--- Note that this might fall into an infinite loop.
-sendUntil
-  :: Mailbox Packet
-  -> Packet
-  -> Int
-  -- ^ Max retries
-  -> (Packet -> Bool)
-  -- ^ True if we see another packet
-  -> STM (Maybe ConnectionError)
-  -- ^ Nothing if we know that the ACK is received by the peer.
-
-sendUntil (pktIn, pktOut) pkt retryLimit pktCheck
-  = go 0
- where
-  go retries 
-    | retries >= retryLimit = return False
-    | otherwise = do
-      peerClosed <- P.send pktOut pkt
-      if peerClosed
-        then return $ Just PeerClosed
-        else do
-          mbPkt <- recvIf pktCheck (P.recv pktIn)
-          case mbPkt of
-            Nothing -> return $ Just PeerClosed
-            Just pkt -> return Nothing
-
-recvIf :: Monad m => (a -> Bool) -> m (Maybe a) -> m (Maybe a)
-recvIf check runInput = do
-  mbA <- runInput
-  case check <$> mbA of
-    Just False ->
-      -- Not expected: drop it.
-      recvIf check runInput
-    _ ->
-      -- Either accepted or exhausted.
-      return mbA
-
-sendStep1
+sendData
   :: P.Output Packet
   -- ^ Endpoint
   -> STM Int
@@ -270,29 +95,110 @@ sendStep1
   -- ^ Output queue
   -> STM Bool
   -- ^ False if Endpoint closed
-sendStep1 pktOut genSeqNo payload outQ = do
+sendData pktOut genSeqNo payload outQ = do
   seqNo <- genSeqNo
   let pkt = Packet seqNo (-1) [] payload
-  modifyTVar outQ $ M.insert seqNo pkt
+  modifyTVar' outQ $ M.insert seqNo pkt
   T.send pktOut pkt
 
-resend pktOut outQ = all <$> mapM (T.send pktOut) outQ
+resendAll
+  :: P.Output Packet
+  -> TVar (Map Int (Packet, Packet))
+  -- ^ inQ: Map seqNo (dataPkt, replyPkt)
+  -> TVar (Map Int Packet)
+  -> STM Bool
+resendAll pktOut inQ outQ = do
+  ok1 <- all <$> mapM (T.send pktOut . snd) inQ
+  ok2 <- all <$> mapM (T.send pktOut) outQ
+  return $ ok1 && ok2
 
-recvOnce pktOut (Packet {..})@pkt genSeqNo inQ outQ
+deliveryPacket
+  :: TVar Int
+  -> TVar (Map Int Packet)
+  -> P.Output B.ByteString
+  -> Packet
+  -> STM Bool
+  -- ^ Whether all the deliveries are successful.
+deliveryPacket lastDeliverySeqNo deliveryQ bsOut (Packet {..})@pkt = do
+  weReDone <- packetIsDelivered lastDeliverySeqNo pkt
+  if weReDone
+    then return True
+    else do
+      modifyTVar' deliveryQ $ M.insert pktSeqNo pkt
+      go
+      | otherwise -> error 
+ where
+  go = do
+    lastNo <- readTVar lastDeliverySeqNo
+    mbPkt <- M.lookup lastNo <$> readTVar deliveryQ
+    case mbPkt of
+      Nothing -> return True
+      Just (Packet {..})@pkt -> do
+        modifyTVar' lastDeliverySeqNo (+1)
+        sendRes <- if isAckEcho pktFlags
+          then do
+            -- Do nothing
+            return True
+          else if isData pktFlags
+            then T.send bsOut pktPayload
+            else error "deliveryPacket: Not reached"
+        modifyTVar' deliveryQ $ M.delete lastNo
+        if sendRes
+          then go
+          else return sendRes
+
+packetIsDelivered
+  :: TVar Int
+  -> Packet
+  -> STM Bool
+packetIsDelivered lastDeliverySeqNo (Packet {..}) =
+  (pktSeqNo <=) <$> readTVar lastDeliverySeqNo
+
+onPacket
+  :: P.Output Packet
+  -> Packet
+  -> STM Int
+  -> (Int -> STM Bool)
+  -> (Packet -> STM ())
+  -> TVar (Map Int (Packet, Packet))
+  -> TVar (Map Int Packet)
+  -> STM ()
+onPacket pktOut (Packet {..})@pkt genSeqNo checkDelivery deliver inQ outQ
   | isData pktFlags = do
     -- ^ Got data
-    mbInfo <- M.lookup pktSeqNo <$> readTVar inQ
-    case mbInfo of
-      Nothing -> do
-        -- Haven't send a ACK-ECHO yet.
-        seqNo <- genSeqNo
-        let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
-        modifyTVar inQ $ M.insert pktSeqNo (pkt, replyPkt)
-      Just (_, replyPkt) -> do
-        -- Resend ACK-ECHO
+    isDelivered <- checkDelivery pkt
+    if isDelivered
+      then
+        -- ACK has been received and data has been already delivered to
+        -- the application. We can just drop this packet.
+        return ()
+      else do
+        mbInfo <- M.lookup pktSeqNo <$> readTVar inQ
+        case mbInfo of
+          Nothing -> do
+            -- Haven't send a ACK-ECHO yet.
+            seqNo <- genSeqNo
+            let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
+            modifyTVar' inQ $ M.insert pktSeqNo (pkt, replyPkt)
+          Just (_, replyPkt) -> do
+            -- Do nothing and wait for the resender to resend ACK-ECHO
+            return ()
+
   | isAckEcho pktFlags = do
-    -- ^ ACK-ECHO
-    modifyTVar outQ $ M.delete pktActNo
-    T.send Packet
+    -- ^ ACK-ECHO: Remove the data packet in the outQ and send an ACK.
+    deliver pkt
+    modifyTVar' outQ $ M.delete pktActNo
+    T.send pktOut $ Packet (-1) pktSeqNo [ACK] B.empty
+    return ()
+
   | isAck = return ()
-    -- ^ plain ACK: do nothing
+    -- ^ ACK: Remove the ACK-ECHO packet in the inQ and put the data packet
+    -- into the delivery queue. Or, if there's no matching record in the
+    -- inQ, do nothing.
+    mbInfo <- M.lookup pktAckNo <$> readTVar inQ
+    case mbInfo of
+      Nothing -> return ()
+      Just (dataPkt, _) -> do
+        modifyTVar' inQ $ M.delete pktActNo
+        deliver dataPkt
+
