@@ -4,14 +4,20 @@
 
 module Protocol where
 
+import Control.Applicative
 import Data.Bits
+import Data.Typeable
 import qualified Data.Map as M
 import Data.Serialize
 import qualified Data.ByteString as B
+import Data.Foldable
 import Data.Traversable
-import Prelude hiding (forM, forM_, mapM, mapM_)
+import Prelude hiding (forM, forM_, mapM, mapM_, all, elem)
 import Pipes
-import Pipes.Concurrency
+import qualified Pipes.Concurrent as P
+import Control.Concurrent.STM
+import Control.Concurrent.Async
+import Control.Monad hiding (mapM)
 import System.Random.MWC
 -- ^ Not crypto though
 
@@ -49,37 +55,37 @@ data ConnectionError
   | TooManyRetries
   deriving (Show, Eq, Ord, Typeable)
 
+type Mailbox a = (P.Input a, P.Output a)
+
 establish
-  :: ConnOption
-  -- ^ Options?
-  -> Mailbox Packet
+  :: Mailbox Packet
   -- ^ Incoming and outoming packets (unreliable)
   -> IO (Mailbox B.ByteString)
   -- ^ Connected endpoints. Assume that bytestrings are already split into
   -- smaller pieces.
-establish (ConnOption {..}) (pktIn, pktOut)@pktMailbox = do
+establish pktMailbox@(pktIn, pktOut) = do
   inQ <- newTVarIO M.empty
   outQ <- newTVarIO M.empty
   deliveryQ <- newTVarIO M.empty
   lastDeliveredSeqNo <- newTVarIO 0
   lastUsedSeqNo <- newTVarIO 0
 
-  (bsIn, bsOut) <- spawn P.Unbounded
+  (bsOut, bsIn) <- P.spawn P.Unbounded
 
   let
     genSeqNo = modifyTVar' lastUsedSeqNo (+1) *> readTVar lastUsedSeqNo
-    checkDelivery = packetIsDelivered lastDeliverySeqNo
+    checkDelivery = packetIsDelivered lastDeliveredSeqNo
     deliver = deliverPacket lastDeliveredSeqNo deliveryQ bsOut
 
   readPktT <- async $ forever $ atomically $ do
-    Just pkt <- T.recv pktIn
-    onPacket pktOut pkt genSeqNo checkDelivery deliver inQ outQ
+    Just pkt <- P.recv pktIn
+    onPacket pktOut pkt genSeqNo checkDelivery (void . deliver) inQ outQ
 
   resendPktT <- async $ forever $ atomically $
     resendAll pktOut inQ outQ
 
   writePktT <- async $ forever $ atomically $ do
-    Just bs <- T.recv bsIn
+    Just bs <- P.recv bsIn
     sendData pktOut genSeqNo bs outQ
 
   return (bsIn, bsOut)
@@ -91,7 +97,7 @@ sendData
   -- ^ Seq No generator
   -> B.ByteString
   -- ^ Payload (already cut into correct size)
-  -> TVar (Map Int Packet)
+  -> TVar (M.Map Int Packet)
   -- ^ Output queue
   -> STM Bool
   -- ^ False if Endpoint closed
@@ -99,48 +105,49 @@ sendData pktOut genSeqNo payload outQ = do
   seqNo <- genSeqNo
   let pkt = Packet seqNo (-1) [] payload
   modifyTVar' outQ $ M.insert seqNo pkt
-  T.send pktOut pkt
+  P.send pktOut pkt
 
 resendAll
   :: P.Output Packet
-  -> TVar (Map Int (Packet, Packet))
+  -> TVar (M.Map Int (Packet, Packet))
   -- ^ inQ: Map seqNo (dataPkt, replyPkt)
-  -> TVar (Map Int Packet)
+  -> TVar (M.Map Int Packet)
   -> STM Bool
 resendAll pktOut inQ outQ = do
-  ok1 <- all <$> mapM (T.send pktOut . snd) inQ
-  ok2 <- all <$> mapM (T.send pktOut) outQ
+  ok1 <- allM . mapM (P.send pktOut . snd) =<< readTVar inQ
+  ok2 <- allM . mapM (P.send pktOut) =<< readTVar outQ
   return $ ok1 && ok2
+ where
+  allM = (all id <$>)
 
-deliveryPacket
+deliverPacket
   :: TVar Int
-  -> TVar (Map Int Packet)
+  -> TVar (M.Map Int Packet)
   -> P.Output B.ByteString
   -> Packet
   -> STM Bool
   -- ^ Whether all the deliveries are successful.
-deliveryPacket lastDeliverySeqNo deliveryQ bsOut (Packet {..})@pkt = do
+deliverPacket lastDeliverySeqNo deliveryQ bsOut pkt@(Packet {..}) = do
   weReDone <- packetIsDelivered lastDeliverySeqNo pkt
   if weReDone
     then return True
     else do
       modifyTVar' deliveryQ $ M.insert pktSeqNo pkt
       go
-      | otherwise -> error 
  where
   go = do
     lastNo <- readTVar lastDeliverySeqNo
     mbPkt <- M.lookup lastNo <$> readTVar deliveryQ
     case mbPkt of
       Nothing -> return True
-      Just (Packet {..})@pkt -> do
+      Just pkt@(Packet {..}) -> do
         modifyTVar' lastDeliverySeqNo (+1)
         sendRes <- if isAckEcho pktFlags
           then do
             -- Do nothing
             return True
           else if isData pktFlags
-            then T.send bsOut pktPayload
+            then P.send bsOut pktPayload
             else error "deliveryPacket: Not reached"
         modifyTVar' deliveryQ $ M.delete lastNo
         if sendRes
@@ -158,12 +165,12 @@ onPacket
   :: P.Output Packet
   -> Packet
   -> STM Int
-  -> (Int -> STM Bool)
+  -> (Packet -> STM Bool)
   -> (Packet -> STM ())
-  -> TVar (Map Int (Packet, Packet))
-  -> TVar (Map Int Packet)
+  -> TVar (M.Map Int (Packet, Packet))
+  -> TVar (M.Map Int Packet)
   -> STM ()
-onPacket pktOut (Packet {..})@pkt genSeqNo checkDelivery deliver inQ outQ
+onPacket pktOut pkt@(Packet {..}) genSeqNo checkDelivery deliver inQ outQ
   | isData pktFlags = do
     -- ^ Got data
     isDelivered <- checkDelivery pkt
@@ -187,11 +194,11 @@ onPacket pktOut (Packet {..})@pkt genSeqNo checkDelivery deliver inQ outQ
   | isAckEcho pktFlags = do
     -- ^ ACK-ECHO: Remove the data packet in the outQ and send an ACK.
     deliver pkt
-    modifyTVar' outQ $ M.delete pktActNo
-    T.send pktOut $ Packet (-1) pktSeqNo [ACK] B.empty
+    modifyTVar' outQ $ M.delete pktAckNo
+    P.send pktOut $ Packet (-1) pktSeqNo [ACK] B.empty
     return ()
 
-  | isAck = return ()
+  | isAck pktFlags = do
     -- ^ ACK: Remove the ACK-ECHO packet in the inQ and put the data packet
     -- into the delivery queue. Or, if there's no matching record in the
     -- inQ, do nothing.
@@ -199,6 +206,10 @@ onPacket pktOut (Packet {..})@pkt genSeqNo checkDelivery deliver inQ outQ
     case mbInfo of
       Nothing -> return ()
       Just (dataPkt, _) -> do
-        modifyTVar' inQ $ M.delete pktActNo
+        modifyTVar' inQ $ M.delete pktAckNo
         deliver dataPkt
+
+isData xs = xs == []
+isAckEcho xs = isAck xs && ECHO `elem` xs
+isAck = (ACK `elem`)
 
