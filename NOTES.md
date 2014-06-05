@@ -39,27 +39,56 @@ performance. It uses `Map` to record packets and `STM` to handle concurrency.
 
 ### Performance (as of 5 June)
 
-Sending and echoing 100 packets using 1 ms, 2 ms and 5 ms as the maximum
-delays, and 1%, 2% and 5% as the packet drop rates.
+XXX: I just found that according to Wikipedia, a 0.1% drop rate would be
+tolerable, and anything above that will affect the connection quality
+significantly. Huh..
 
-    $ time ./TestProtocol 1000 0.01
-    real    0m1.579s
-    user    0m0.071s
-    sys     0m0.069s
+Sending and echoing 100 packets (sequentially, where the next data segment
+is not sent before the echo reply is received) using 1 ms, 5 ms and 50 ms
+as the maximum delays, and 0.1% as the packet drop rates:
 
-    $ time ./TestProtocol 2000 0.02
-    real    0m2.389s
-    user    0m0.077s
-    sys     0m0.076s
+    $ time ./TestProtocol 1000 0.001
+    real    0m0.837s
+    user    0m0.058s
+    sys     0m0.056s
+    
+    $ time ./TestProtocol 5000 0.001
+    real    0m2.146s
+    user    0m0.090s
+    sys     0m0.092s
+    
+    $ time ./TestProtocol 50000 0.001
+    real    0m12.032s
+    user    0m0.146s
+    sys     0m0.164s
 
-    $ time ./TestProtocol 5000 0.05
-    real    0m4.500s
-    user    0m0.097s
-    sys     0m0.102s
+This implies that the average roundtrip time will usually be 8ms, 20ms
+and 120ms respectively.
 
-This seems to be not usable -- Even when the network condition is pretty
-good (1 ms delay with 1% drop rate), the maximum bandwidth can only
-reach `480 * 100 / 1.579 = 30398 bytes/second`.
+If we send all the packets before starting to wait, the time will be:
 
-Batch sending ("window" in TCP term) needs to be implemented.
+    $ time ./TestProtocol 1000 0.001 100
+    real    0m0.283s
+    user    0m0.010s
+    sys     0m0.010s
+    
+    $ time ./TestProtocol 50000 0.001 100
+    real    0m0.412s
+    user    0m0.032s
+    sys     0m0.027s
+    
+    $ time ./TestProtocol 500000 0.001 100
+    real    0m0.718s
+    user    0m0.026s
+    sys     0m0.023s
+
+And for throughoutput, the time used in sending in 100k packets under
+1ms latency and 0.1% drop rate:
+
+$ time ./TestProtocol 1000 0.001 100000
+real    0m2.854s
+user    0m2.763s
+sys     0m0.069s
+
+That's 40MB/s in one direction.
 

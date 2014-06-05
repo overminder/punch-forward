@@ -27,10 +27,6 @@ data UnreliableOption
     -- ^ 0-1
   }
 
-reliableOption = UnreliableOption undefined 0 0
-isReliable (UnreliableOption _ 0 0) = True
-isReliable _ = False
-
 mkUnreliablePipe
   :: UnreliableOption
   -> IO (Mailbox a)
@@ -43,12 +39,20 @@ mkUnreliablePipe (UnreliableOption {..}) = do
       diceVal <- uniform uoRandGen :: IO Double
       if diceVal > uoDropRate
         then do
-          -- Keep it
-          diceVal2 <- uniform uoRandGen :: IO Double
+          -- Keep it.
+          -- Check if we need to duplicate it.
+          dupRate <- uniform uoRandGen :: IO Double
           let
-            delay = diceVal2 * fromIntegral uoMaxDelay
-          threadDelay (floor delay)
-          void $ atomically $ P.send thingOut thing
+            dupNum = if dupRate > 0.5 then 10 else 1
+            things = replicate dupNum thing
+              
+          forM_ things $ \ thing -> do
+            diceVal2 <- uniform uoRandGen :: IO Double
+            let
+              delay = diceVal2 * fromIntegral uoMaxDelay
+            async $ do
+              threadDelay (floor delay)
+              void $ atomically $ P.send thingOut thing
         else
           return ()
   return (thingIn, thingOut)
@@ -58,11 +62,11 @@ testEcho option = monadicIO $ do
   --let bss = ["Hello", "World", "Bye"]
   run $ propEcho option bss
 
-propEcho option bss = do
+propEcho mbOption bss = do
   let
-    startTransport prod cons
-      | isReliable option = async $ runEffect $ prod >-> cons
-      | otherwise = do
+    startTransport prod cons = case mbOption of
+      Nothing -> async $ runEffect $ prod >-> cons
+      Just option -> do
         (altIn, altOut) <- mkUnreliablePipe option
         async $ runEffect $ prod >-> P.toOutput altOut
         async $ runEffect $ P.fromInput altIn >-> cons
@@ -78,9 +82,10 @@ propEcho option bss = do
   localT <- async $ do
     (localBsIn, localBsOut) <- establish
       (localPktRIn, localPktWOut) "local"
+    mapM_ (atomically . P.send localBsOut) bss
     results <- forM bss $ \ bs -> do
       --putStrLn "sending..."
-      atomically $ P.send localBsOut bs
+      --atomically $ P.send localBsOut bs
       --putStrLn "receiving..."
       Just bs' <- atomically $ P.recv localBsIn
       --putStrLn "one iter done..."
@@ -106,16 +111,17 @@ propEcho option bss = do
   wait localT
 
 main = do
-  [sDelay, sDropRate] <- getArgs
+  [sDelay, sDropRate, sNumItems] <- getArgs
   rndGen <- createSystemRandom
   let
     delay = maybe 100000 id $ readMaybe sDelay
     dropRate = maybe 0.1 id $ readMaybe sDropRate
+    numItems = maybe 100 id $ readMaybe sNumItems
     unreliableOption = UnreliableOption rndGen delay dropRate
-    bss = map (BU8.fromString . show) [1..100]
+    bss = map (BU8.fromString . show) [1..numItems]
     --bss = map BU8.fromString $ words "Hello world, this is sparta yay huh"
   --quickCheck $ testEcho reliableOption
   --quickCheck $ testEcho unreliableOption
-  ok <- propEcho unreliableOption bss
+  ok <- propEcho (Just unreliableOption) bss
   print ok
 

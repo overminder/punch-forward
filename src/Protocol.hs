@@ -72,7 +72,12 @@ establish
   -- smaller pieces.
 establish pktMailbox@(pktIn, pktOut) nameTag = do
   inQ <- newTVarIO M.empty
+  -- ^ ACKECHO-seq => (data-pkt, ACKECHO-pkt)
+  -- Will be cleared when an ACK for the ACKECHO-pkt is received.
+
   outQ <- newTVarIO M.empty
+  -- ^ data-seq => data-pkt
+  -- Will be cleared when an ACKECHO for the data-pkt is received
   deliveryQ <- newTVarIO M.empty
   lastDeliveredSeqNo <- newTVarIO 0
   lastUsedSeqNo <- newTVarIO 0
@@ -218,7 +223,7 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo checkDelivery deliver
             -- Haven't send a ACK-ECHO yet.
             seqNo <- genSeqNo
             let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
-            modifyTVar' inQ $ M.insert pktSeqNo (pkt, replyPkt)
+            modifyTVar' inQ $ M.insert seqNo (pkt, replyPkt)
             P.send pktOut replyPkt
             -- ^ Send the reply NOW
           Just (_, replyPkt) -> do
