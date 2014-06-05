@@ -12,14 +12,19 @@ import Data.Serialize
 import qualified Data.ByteString as B
 import Data.Foldable
 import Data.Traversable
+import Debug.Trace
 import Prelude hiding (forM, forM_, mapM, mapM_, all, elem)
 import Pipes
 import qualified Pipes.Concurrent as P
+import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Monad hiding (mapM)
 import System.Random.MWC
 -- ^ Not crypto though
+
+trace2 _ = id
+--trace2 = trace
 
 -- This should of course be more low-level (like a c-struct).
 data Packet
@@ -60,38 +65,49 @@ type Mailbox a = (P.Input a, P.Output a)
 establish
   :: Mailbox Packet
   -- ^ Incoming and outoming packets (unreliable)
+  -> String
+  -- ^ Name, for debug's purpose
   -> IO (Mailbox B.ByteString)
   -- ^ Connected endpoints. Assume that bytestrings are already split into
   -- smaller pieces.
-establish pktMailbox@(pktIn, pktOut) = do
+establish pktMailbox@(pktIn, pktOut) nameTag = do
   inQ <- newTVarIO M.empty
   outQ <- newTVarIO M.empty
   deliveryQ <- newTVarIO M.empty
   lastDeliveredSeqNo <- newTVarIO 0
   lastUsedSeqNo <- newTVarIO 0
 
-  (bsOut, bsIn) <- P.spawn P.Unbounded
+  -- W means app -> NIC and R means NIC -> app
+  (bsWOut, bsWIn) <- P.spawn P.Unbounded
+  (bsROut, bsRIn) <- P.spawn P.Unbounded
 
   let
     genSeqNo = modifyTVar' lastUsedSeqNo (+1) *> readTVar lastUsedSeqNo
-    checkDelivery = packetIsDelivered lastDeliveredSeqNo
-    deliver = deliverPacket lastDeliveredSeqNo deliveryQ bsOut
+    checkDelivery = packetIsDelivered nameTag lastDeliveredSeqNo
+    deliver = deliverPacket nameTag lastDeliveredSeqNo deliveryQ bsROut
 
   readPktT <- async $ forever $ atomically $ do
     Just pkt <- P.recv pktIn
-    onPacket pktOut pkt genSeqNo checkDelivery (void . deliver) inQ outQ
+    onPacket nameTag pktOut pkt genSeqNo checkDelivery (void . deliver)
+      inQ outQ
 
-  resendPktT <- async $ forever $ atomically $
-    resendAll pktOut inQ outQ
+  resendPktT <- async $ forever $ do
+    threadDelay 100000
+    Just nSent <- atomically $ resendAll pktOut inQ outQ
+    if nSent /= 0
+      then trace2 (nameTag ++ " resendPkt: " ++ show nSent) return ()
+      else return ()
 
   writePktT <- async $ forever $ atomically $ do
-    Just bs <- P.recv bsIn
-    sendData pktOut genSeqNo bs outQ
+    Just bs <- P.recv bsWIn
+    sendData nameTag pktOut genSeqNo bs outQ
 
-  return (bsIn, bsOut)
+  return (bsRIn, bsWOut)
 
 sendData
-  :: P.Output Packet
+  :: String
+  -- ^ debug name
+  -> P.Output Packet
   -- ^ Endpoint
   -> STM Int
   -- ^ Seq No generator
@@ -101,43 +117,53 @@ sendData
   -- ^ Output queue
   -> STM Bool
   -- ^ False if Endpoint closed
-sendData pktOut genSeqNo payload outQ = do
-  seqNo <- genSeqNo
-  let pkt = Packet seqNo (-1) [] payload
-  modifyTVar' outQ $ M.insert seqNo pkt
-  P.send pktOut pkt
+sendData nameTag pktOut genSeqNo payload outQ
+  | trace2 (nameTag ++ " sendData " ++ show payload) False = undefined
+  | otherwise = do
+    seqNo <- genSeqNo
+    let pkt = Packet seqNo (-1) [] payload
+    modifyTVar' outQ $ M.insert seqNo pkt
+    P.send pktOut pkt
 
 resendAll
   :: P.Output Packet
   -> TVar (M.Map Int (Packet, Packet))
   -- ^ inQ: Map seqNo (dataPkt, replyPkt)
   -> TVar (M.Map Int Packet)
-  -> STM Bool
+  -> STM (Maybe Int)
 resendAll pktOut inQ outQ = do
-  ok1 <- allM . mapM (P.send pktOut . snd) =<< readTVar inQ
-  ok2 <- allM . mapM (P.send pktOut) =<< readTVar outQ
-  return $ ok1 && ok2
- where
-  allM = (all id <$>)
+  res1 <- mapM (P.send pktOut . snd) =<< readTVar inQ
+  res2 <- mapM (P.send pktOut) =<< readTVar outQ
+  let
+    allOk = all id res1 && all id res2
+    nSent = M.size res1 + M.size res2
+  if allOk
+    then return $ Just nSent
+    else return Nothing
 
 deliverPacket
-  :: TVar Int
+  :: String
+  -> TVar Int
   -> TVar (M.Map Int Packet)
   -> P.Output B.ByteString
   -> Packet
   -> STM Bool
   -- ^ Whether all the deliveries are successful.
-deliverPacket lastDeliverySeqNo deliveryQ bsOut pkt@(Packet {..}) = do
-  weReDone <- packetIsDelivered lastDeliverySeqNo pkt
-  if weReDone
-    then return True
-    else do
-      modifyTVar' deliveryQ $ M.insert pktSeqNo pkt
-      go
+deliverPacket nameTag lastDeliverySeqNo deliveryQ bsOut
+    pkt@(Packet {..})
+  | trace2 (nameTag ++ " deliver " ++ show pkt) False = undefined
+  | otherwise = do
+    weReDone <- packetIsDelivered nameTag lastDeliverySeqNo pkt
+    if weReDone
+      then return True
+      else do
+        trace2 (nameTag ++ " put to deliveryQ! " ++ show pkt) $ return ()
+        modifyTVar' deliveryQ $ M.insert pktSeqNo pkt
+        go
  where
   go = do
     lastNo <- readTVar lastDeliverySeqNo
-    mbPkt <- M.lookup lastNo <$> readTVar deliveryQ
+    mbPkt <- M.lookup (1 + lastNo) <$> readTVar deliveryQ
     case mbPkt of
       Nothing -> return True
       Just pkt@(Packet {..}) -> do
@@ -155,14 +181,18 @@ deliverPacket lastDeliverySeqNo deliveryQ bsOut pkt@(Packet {..}) = do
           else return sendRes
 
 packetIsDelivered
-  :: TVar Int
+  :: String
+  -> TVar Int
   -> Packet
   -> STM Bool
-packetIsDelivered lastDeliverySeqNo (Packet {..}) =
-  (pktSeqNo <=) <$> readTVar lastDeliverySeqNo
+packetIsDelivered nameTag lastDeliverySeqNo pkt@(Packet {..}) = do
+  ok <- (pktSeqNo <=) <$> readTVar lastDeliverySeqNo
+  return $
+    trace2 (nameTag ++ " isDelivered " ++ show pkt ++ ": " ++ show ok) ok
 
 onPacket
-  :: P.Output Packet
+  :: String
+  -> P.Output Packet
   -> Packet
   -> STM Int
   -> (Packet -> STM Bool)
@@ -170,7 +200,9 @@ onPacket
   -> TVar (M.Map Int (Packet, Packet))
   -> TVar (M.Map Int Packet)
   -> STM ()
-onPacket pktOut pkt@(Packet {..}) genSeqNo checkDelivery deliver inQ outQ
+onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo checkDelivery deliver
+    inQ outQ
+  | trace2 (nameTag ++ " onPacket " ++ show pkt) False = undefined
   | isData pktFlags = do
     -- ^ Got data
     isDelivered <- checkDelivery pkt
@@ -187,9 +219,12 @@ onPacket pktOut pkt@(Packet {..}) genSeqNo checkDelivery deliver inQ outQ
             seqNo <- genSeqNo
             let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
             modifyTVar' inQ $ M.insert pktSeqNo (pkt, replyPkt)
+            P.send pktOut replyPkt
+            -- ^ Send the reply NOW
           Just (_, replyPkt) -> do
-            -- Do nothing and wait for the resender to resend ACK-ECHO
-            return ()
+            P.send pktOut replyPkt
+            -- ^ Send the reply NOW
+        return ()
 
   | isAckEcho pktFlags = do
     -- ^ ACK-ECHO: Remove the data packet in the outQ and send an ACK.

@@ -37,3 +37,29 @@ Hmm...
 The current implementation definitely needs not to be optimized for
 performance. It uses `Map` to record packets and `STM` to handle concurrency.
 
+### Performance (as of 5 June)
+
+Sending and echoing 100 packets using 1 ms, 2 ms and 5 ms as the maximum
+delays, and 1%, 2% and 5% as the packet drop rates.
+
+    $ time ./TestProtocol 1000 0.01
+    real    0m1.579s
+    user    0m0.071s
+    sys     0m0.069s
+
+    $ time ./TestProtocol 2000 0.02
+    real    0m2.389s
+    user    0m0.077s
+    sys     0m0.076s
+
+    $ time ./TestProtocol 5000 0.05
+    real    0m4.500s
+    user    0m0.097s
+    sys     0m0.102s
+
+This seems to be not usable -- Even when the network condition is pretty
+good (1 ms delay with 1% drop rate), the maximum bandwidth can only
+reach `480 * 100 / 1.579 = 30398 bytes/second`.
+
+Batch sending ("window" in TCP term) needs to be implemented.
+

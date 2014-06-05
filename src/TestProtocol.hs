@@ -2,16 +2,19 @@
     OverloadedStrings #-}
 
 import Control.Applicative
-import Control.Concurrent
+import Control.Concurrent hiding (yield)
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Monad hiding (mapM)
+import qualified Data.ByteString.UTF8 as BU8
 import Pipes
 import qualified Pipes.Concurrent as P
 import System.Random.MWC
 import Test.QuickCheck
 import Test.QuickCheck.Instances
 import Test.QuickCheck.Monadic
+import Text.Read
+import System.Environment
 
 import Protocol
 
@@ -23,6 +26,10 @@ data UnreliableOption
     uoDropRate :: Double
     -- ^ 0-1
   }
+
+reliableOption = UnreliableOption undefined 0 0
+isReliable (UnreliableOption _ 0 0) = True
+isReliable _ = False
 
 mkUnreliablePipe
   :: UnreliableOption
@@ -46,30 +53,69 @@ mkUnreliablePipe (UnreliableOption {..}) = do
           return ()
   return (thingIn, thingOut)
 
-testReliable = monadicIO $ do
-  --bss <- pick $ replicateM 100 arbitrary
-  let bss = ["a", "b", "c"]
-  run $ do
-    -- Out and In from the point of the network interface
-    (remotePktOutR, remotePktInR) <- P.spawn P.Unbounded
-    (remotePktOutW, remotePktInW) <- P.spawn P.Unbounded
-    (localPktOutR, localPktInR) <- P.spawn P.Unbounded
-    (localPktOutW, localPktInW) <- P.spawn P.Unbounded
+testEcho option = monadicIO $ do
+  bss <- pick $ replicateM 100 arbitrary
+  --let bss = ["Hello", "World", "Bye"]
+  run $ propEcho option bss
 
-    localT <- async $ do
-      (localBsIn, localBsOut) <- establish (localPktInR, localPktOutW)
-      results <- forM bss $ \ bs -> atomically $ do
-        P.send localBsOut bs
-        Just bs' <- P.recv localBsIn
-        return $ bs == bs'
-      return $ all id results
+propEcho option bss = do
+  let
+    startTransport prod cons
+      | isReliable option = async $ runEffect $ prod >-> cons
+      | otherwise = do
+        (altIn, altOut) <- mkUnreliablePipe option
+        async $ runEffect $ prod >-> P.toOutput altOut
+        async $ runEffect $ P.fromInput altIn >-> cons
+  -- R and W from the point of the network interface
+  -- i.e., the NIC reads from endpoint and writes to the endpoint,
+  -- so R represents the incoming packets and W represents the
+  -- outgoing packets.
+  (remotePktROut, remotePktRIn) <- P.spawn P.Unbounded
+  (remotePktWOut, remotePktWIn) <- P.spawn P.Unbounded
+  (localPktROut, localPktRIn) <- P.spawn P.Unbounded
+  (localPktWOut, localPktWIn) <- P.spawn P.Unbounded
 
-    remoteT <- async $ do
-      (remoteBsIn, remoteBsOut) <- establish (remotePktInR, remotePktOutW)
-      -- remote is an echo server
-      runEffect $ P.fromInput remoteBsIn >-> P.toOutput remoteBsOut
+  localT <- async $ do
+    (localBsIn, localBsOut) <- establish
+      (localPktRIn, localPktWOut) "local"
+    results <- forM bss $ \ bs -> do
+      --putStrLn "sending..."
+      atomically $ P.send localBsOut bs
+      --putStrLn "receiving..."
+      Just bs' <- atomically $ P.recv localBsIn
+      --putStrLn "one iter done..."
+      return $ bs == bs'
+    return $ all id results
 
-    wait localT
+  let
+    loggerPipe :: Show a => Pipe a a IO ()
+    loggerPipe = forever $ do
+      x <- await
+      liftIO $ putStrLn $ "[Log] " ++ show x
+      yield x
+
+  remoteT <- async $ do
+    (remoteBsIn, remoteBsOut) <- establish
+      (remotePktRIn, remotePktWOut) "remote"
+    -- remote is an echo server
+    runEffect $ P.fromInput remoteBsIn >-> P.toOutput remoteBsOut
+
+  startTransport (P.fromInput localPktWIn) (P.toOutput remotePktROut)
+  startTransport (P.fromInput remotePktWIn) (P.toOutput localPktROut)
+
+  wait localT
 
 main = do
-  quickCheck testReliable
+  [sDelay, sDropRate] <- getArgs
+  rndGen <- createSystemRandom
+  let
+    delay = maybe 100000 id $ readMaybe sDelay
+    dropRate = maybe 0.1 id $ readMaybe sDropRate
+    unreliableOption = UnreliableOption rndGen delay dropRate
+    bss = map (BU8.fromString . show) [1..100]
+    --bss = map BU8.fromString $ words "Hello world, this is sparta yay huh"
+  --quickCheck $ testEcho reliableOption
+  --quickCheck $ testEcho unreliableOption
+  ok <- propEcho unreliableOption bss
+  print ok
+
