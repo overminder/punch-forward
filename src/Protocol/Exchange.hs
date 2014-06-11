@@ -62,9 +62,9 @@ data PacketType
 bindUDPSock :: Int -> IO Socket
 bindUDPSock port = do
   s <- socket AF_INET Datagram defaultProtocol
-  localhost <- hostAddress <$> getHostByName "192.168.2.3"
+  --localhost <- hostAddress <$> getHostByName "192.168.2.3"
   -- ^ Better use INADDR_ANY
-  bindSocket s (SockAddrInet (fromIntegral port) localhost)
+  bindSocket s (SockAddrInet (fromIntegral port) iNADDR_ANY)
   return s
 
 startClient
@@ -91,7 +91,7 @@ startClient (serverHostName, serverPort) ty cid = do
   let
     readServerReply = do
       (got, _, who) <- recvFrom s 512
-      putStrLn $ "readServerReply -> " ++ show got
+      putStrLn $ "readServerReply -> " ++ show got ++ " from " ++ show who
       if who /= serverAddr
         then readServerReply
         else return got
@@ -103,12 +103,13 @@ startClient (serverHostName, serverPort) ty cid = do
       privAddr = decodeAddr (pktPrivAddr peerPkt)
 
   sendTo s cid pubAddr
-  sendTo s cid privAddr
+  try $ sendTo s cid privAddr :: IO (Either SomeException Int)
   -- ^ Punch
 
   let
     readPeerReply = do
       (got, _, who) <- recvFrom s 512
+      putStrLn $ "readPeerReply -> " ++ show got ++ " from " ++ show who
       if got == cid && who == pubAddr
         then return pubAddr
         else if got == cid && who == privAddr

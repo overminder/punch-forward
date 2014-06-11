@@ -12,16 +12,19 @@ import Data.Serialize
 import qualified Data.ByteString as B
 import Data.Foldable
 import Data.Traversable
+import qualified Data.Serialize as S
 import Debug.Trace
-import Prelude hiding (forM, forM_, mapM, mapM_, all, elem)
+import Prelude hiding (forM, forM_, mapM, mapM_, all, elem, foldr, concatMap)
 import Pipes
 import qualified Pipes.Concurrent as P
-import Control.Concurrent
+import Control.Concurrent hiding (yield)
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Monad hiding (mapM)
 import System.Random.MWC
 -- ^ Not crypto though
+import qualified Network.Socket.ByteString as SB
+import Network.Socket
 
 trace2 _ = id
 --trace2 = trace
@@ -253,3 +256,72 @@ isData xs = xs == []
 isAckEcho xs = isAck xs && ECHO `elem` xs
 isAck = (ACK `elem`)
 
+-- Serialization
+putPacket :: Packet -> S.Put
+putPacket (Packet {..}) = do
+  S.put pktSeqNo
+  S.put pktAckNo
+  S.put $ foldFlags pktFlags
+  S.put pktPayload
+
+getPacket :: S.Get Packet
+getPacket = Packet <$> S.get <*> S.get <*> (unfoldFlags <$> S.get) <*> S.get
+
+foldFlags :: Enum a => [a] -> Int
+foldFlags = foldr (flip setFlag) 0
+
+unfoldFlags :: (Bounded a, Enum a) => Int -> [a]
+unfoldFlags flag = concatMap check [minBound..maxBound]
+ where
+  check a = if hasFlag flag a then [a] else []
+
+hasFlags :: Enum a => Int -> [a] -> Bool
+hasFlags flag xs = foldr combine True xs
+ where
+  combine x out = hasFlag flag x && out
+
+hasFlag :: Enum a => Int -> a -> Bool
+hasFlag flag a = testBit flag (fromEnum a)
+
+setFlag :: Enum a => Int -> a -> Int
+setFlag flag a = setBit flag (fromEnum a)
+
+delFlag :: Enum a => Int -> a -> Int
+delFlag flag a = clearBit flag (fromEnum a)
+
+mkPacketPipe
+  :: SockAddr
+  -> Int
+  -> Socket
+  -> IO (P.Input Packet, P.Output Packet)
+mkPacketPipe addr bufsize s = do
+  (pktWOut, pktWIn) <- P.spawn P.Unbounded
+  (pktROut, pktRIn) <- P.spawn P.Unbounded
+
+  let
+    toS = forever $ do
+      bs <- await
+      liftIO $ SB.sendTo s bs addr
+
+    fromS = forever $ do
+      (bs, who) <- liftIO $ SB.recvFrom s bufsize
+      if who /= addr
+        then return ()
+        else yield bs
+
+    serialized = forever $ do
+      x <- await
+      let bs = S.runPut (putPacket x)
+      yield bs
+
+    deserialized = forever $ do
+      bs <- await
+      let eiX = S.runGet getPacket bs
+      case eiX of
+        Left _ -> return ()
+        Right x -> yield x
+
+  async $ runEffect $ P.fromInput pktRIn >-> serialized >-> toS
+  async $ runEffect $ fromS >-> deserialized >-> P.toOutput pktWOut
+
+  return (pktWIn, pktROut)
