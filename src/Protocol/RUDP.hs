@@ -2,7 +2,7 @@
 
 -- Pipes-based UDP-to-reliable-protocol adapter
 
-module Protocol where
+module Protocol.RUDP where
 
 import Control.Applicative
 import Data.Bits
@@ -44,7 +44,7 @@ data PacketFlag
   | SYN
   | FIN
   | ECHO
-  deriving (Show, Eq, Ord, Enum)
+  deriving (Show, Eq, Ord, Enum, Bounded)
 
 data ConnOption
   = ConnOption {

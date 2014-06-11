@@ -16,7 +16,7 @@ import Test.QuickCheck.Monadic
 import Text.Read
 import System.Environment
 
-import Protocol
+import Protocol.RUDP
 
 data UnreliableOption
   = UnreliableOption {
