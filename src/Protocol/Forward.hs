@@ -1,6 +1,7 @@
 module Protocol.Forward where
 
 import qualified Data.ByteString as B
+import Control.Monad
 import Control.Concurrent.Async
 import Pipes
 import qualified Pipes.Concurrent as P
@@ -16,9 +17,10 @@ simpleL2RForwardOnLocal
       Consumer B.ByteString IO ())
   -> IO ()
 simpleL2RForwardOnLocal port (bsIn, bsOut) = do
-  listen (Host "") (show port) $ \ (s, _) -> do
-    async $ runEffect $ P.fromSocket s 4096 >-> bsOut
-    runEffect $ bsIn >-> P.toSocket s
+  serve (Host "127.0.0.1") (show port) $ \ (s, who) -> do
+    putStrLn $ "someone from local connected: " ++ show who
+    async $ runEffect $ P.fromSocket s 4096 >-> logWith "fromSock " >-> bsOut
+    runEffect $ bsIn >-> logWith "toSock " >-> P.toSocket s
 
 simpleL2RForwardOnRemote
   :: Int
@@ -27,7 +29,13 @@ simpleL2RForwardOnRemote
       Consumer B.ByteString IO ())
   -> IO ()
 simpleL2RForwardOnRemote port (bsIn, bsOut) = do
-  connect "localhost" (show port) $ \ (s, _) -> do
-    async $ runEffect $ P.fromSocket s 4096 >-> bsOut
-    runEffect $ bsIn >-> P.toSocket s
+  connect "127.0.0.1" (show port) $ \ (s, _) -> do
+    async $ runEffect $ P.fromSocket s 4096 >-> logWith "fromSock " >-> bsOut
+    runEffect $ bsIn >-> logWith "toSock " >-> P.toSocket s
 
+logWith tag = forever $ await >>= yield
+
+--logWith tag = forever $ do
+--  x <- await
+--  liftIO $ putStrLn $ tag ++ show x
+--  yield x

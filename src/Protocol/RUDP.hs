@@ -312,6 +312,7 @@ mkPacketPipe addr bufsize s = do
     serialized = forever $ do
       x <- await
       let bs = S.runPut (putPacket x)
+      --liftIO $ putStrLn $ "[Packet] siz = " ++ show (B.length bs)
       yield bs
 
     deserialized = forever $ do
