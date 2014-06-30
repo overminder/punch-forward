@@ -20,7 +20,7 @@ main = withSocketsDo $ do
   (addr, sock) <- startClient (serverHost, serverPort) Connect Config.peerId
   pipe <- mkPacketPipe addr 512 sock
   (bsIn, rawBsOut) <- establish pipe "Client"
-  let bsOut = cutBsTo 512 >-> P.toOutput rawBsOut
+  let bsOut = cutBsTo 300 >-> P.toOutput rawBsOut
   simpleL2RForwardOnLocal Config.localPort (P.fromInput bsIn, bsOut)
 
 
