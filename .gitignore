@@ -1,4 +1,5 @@
 .*.swp
 *.hi
 *.o
+Config.hs
 Main

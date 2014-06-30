@@ -289,26 +289,26 @@ setFlag flag a = setBit flag (fromEnum a)
 delFlag :: Enum a => Int -> a -> Int
 delFlag flag a = clearBit flag (fromEnum a)
 
+toUdpSocket s addr = forever $ do
+  bs <- await
+  liftIO $ SB.sendTo s bs addr
+
+fromUdpSocket s addr size = forever $ do
+  (bs, who) <- liftIO $ SB.recvFrom s size
+  if who /= addr
+    then return ()
+    else yield bs
+
 mkPacketPipe
   :: SockAddr
   -> Int
   -> Socket
   -> IO (P.Input Packet, P.Output Packet)
-mkPacketPipe addr bufsize s = do
+mkPacketPipe addr bufSize s = do
   (pktWOut, pktWIn) <- P.spawn P.Unbounded
   (pktROut, pktRIn) <- P.spawn P.Unbounded
 
   let
-    toS = forever $ do
-      bs <- await
-      liftIO $ SB.sendTo s bs addr
-
-    fromS = forever $ do
-      (bs, who) <- liftIO $ SB.recvFrom s bufsize
-      if who /= addr
-        then return ()
-        else yield bs
-
     serialized = forever $ do
       x <- await
       let bs = S.runPut (putPacket x)
@@ -321,7 +321,9 @@ mkPacketPipe addr bufsize s = do
         Left _ -> return ()
         Right x -> yield x
 
-  async $ runEffect $ P.fromInput pktRIn >-> serialized >-> toS
-  async $ runEffect $ fromS >-> deserialized >-> P.toOutput pktWOut
+  async $ runEffect $
+    P.fromInput pktRIn >-> serialized >-> toUdpSocket s addr
+  async $ runEffect $
+    fromUdpSocket s addr bufSize >-> deserialized >-> P.toOutput pktWOut
 
   return (pktWIn, pktROut)

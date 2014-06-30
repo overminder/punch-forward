@@ -21,7 +21,7 @@ main = withSocketsDo $ do
   pipe <- mkPacketPipe addr 512 sock
   putStrLn "Server"
   (bsIn, rawBsOut) <- establish pipe "Server"
-  let bsOut = cutBsTo 512 >-> P.toOutput rawBsOut
+  let bsOut = cutBsTo 300 >-> P.toOutput rawBsOut
   simpleL2RForwardOnRemote Config.remotePort (P.fromInput bsIn, bsOut)
 
 
