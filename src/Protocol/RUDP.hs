@@ -8,7 +8,9 @@ import Control.Applicative
 import Data.Bits
 import Data.Typeable
 import Data.Data
+import qualified Data.List as L
 import Data.Function
+import Control.Exception
 import Data.Ord
 import qualified Data.Map as M
 import Data.Serialize
@@ -16,7 +18,6 @@ import qualified Data.ByteString as B
 import Data.Foldable
 import Data.Traversable
 import qualified Data.Serialize as S
-import Debug.Trace
 import Prelude hiding (forM, forM_, mapM, mapM_, all, elem, foldr, concatMap)
 import Pipes
 import qualified Pipes.Concurrent as P
@@ -29,9 +30,9 @@ import System.Random.MWC
 import qualified Network.Socket.ByteString as SB
 import Network.Socket
 import qualified Data.IxSet as Ix
+import Text.Printf
 
-trace2 _ = id
---trace2 = trace
+import Util
 
 -- This should of course be more low-level (like a c-struct).
 data Packet
@@ -75,7 +76,8 @@ data InputEntry = InputEntry {
   ieDataSeq :: DataSeq,
   ieAckEchoSeq :: AckEchoSeq,
   ieDataPkt :: Packet,
-  ieAckEchoPkt :: Packet
+  ieAckEchoPkt :: Packet,
+  ieAcked :: Bool
 }
   deriving (Show, Typeable, Data)
 
@@ -91,6 +93,17 @@ inputEntry dataPkt ackEchoPkt
                (AckEchoSeq $ pktSeqNo ackEchoPkt)
                dataPkt
                ackEchoPkt
+               False
+
+-- XXX: ugly hack. This makes a inputEntry from an ACKECHO from remote
+-- with acked=True.
+inputEntryDummy :: Packet -> InputEntry
+inputEntryDummy remoteAckEchoPkt
+  = InputEntry (DataSeq $ pktSeqNo remoteAckEchoPkt)
+               (AckEchoSeq (-1))
+               remoteAckEchoPkt
+               remoteAckEchoPkt
+               True
 
 newtype DataSeq = DataSeq Int
   deriving (Show, Eq, Ord, Typeable, Data)
@@ -108,6 +121,15 @@ instance Ix.Indexable InputEntry where
 type InputQueue = Ix.IxSet InputEntry
 type OutputQueue = M.Map Int Packet
 type DeliveryQueue = M.Map Int Packet
+
+showPacket :: Packet -> String
+showPacket pkt@(Packet {..}) =
+  printf "seq = %d, ack_seq = %d, flags = [%s], data_len = %d"
+         pktSeqNo pktAckNo flags (B.length pktPayload)
+ where
+  flags = if flags' == "" then "D" else flags'
+  flags' = (map (head . show) . L.delete ACK $ pktFlags) ++ ackDot
+  ackDot = if elem ACK pktFlags then "." else ""
 
 establish
   :: Mailbox Packet
@@ -171,7 +193,10 @@ sendData nameTag pktOut genSeqNo payload outQ
     seqNo <- genSeqNo
     let pkt = Packet seqNo (-1) [] payload
     modifyTVar' outQ $ M.insert seqNo pkt
-    P.send pktOut pkt
+    sendPacket "[send] " pktOut pkt
+
+sendPacket who dest pkt = do
+  P.send dest pkt
 
 resendAll
   :: P.Output Packet
@@ -179,14 +204,19 @@ resendAll
   -> TVar OutputQueue
   -> STM (Maybe Int)
 resendAll pktOut inQ outQ = do
-  res1 <- mapM (P.send pktOut . ieAckEchoPkt) . Ix.toList =<< readTVar inQ
-  res2 <- mapM (P.send pktOut) =<< readTVar outQ
+  res1 <- mapM sendInQ . Ix.toList =<< readTVar inQ
+  res2 <- mapM (sendPacket "[resend/outQ] " pktOut) =<< readTVar outQ
   let
     allOk = all id res1 && all id res2
     nSent = length res1 + M.size res2
   if allOk
     then return $ Just nSent
     else return Nothing
+ where
+  sendInQ entry
+    | ieAcked entry = return True
+      -- ^ Ignore acked entries
+    | otherwise = sendPacket "[resend/inQ] " pktOut (ieAckEchoPkt entry)
 
 withTVar :: TVar b -> (b -> STM (b, a)) -> STM a
 withTVar tv mf = do
@@ -206,15 +236,28 @@ deliverPacket
 deliverPacket nameTag lastDeliverySeqNo deliveryQ bsOut pkt
   | trace2 (nameTag ++ " deliver " ++ show pkt) False = undefined
   | otherwise = do
-      weReDone <- packetSeqIsBelow nameTag lastDeliverySeqNo pkt
+      weReDone <- packetSeqIsBelow (nameTag ++ "/deliveryQ")
+                                   lastDeliverySeqNo pkt
       if weReDone
         then return ()
         else do
           trace2 (nameTag ++ " put to deliveryQ! " ++ show pkt) $ return ()
           modifyTVar' deliveryQ $ M.insert (pktSeqNo pkt) pkt
           pkts <- mergeAndPopEntriesBy lastDeliverySeqNo deliveryQ
-                                       M.lookup M.delete
-          mapM_ (P.send bsOut . pktPayload) pkts
+                                       M.lookup (return . maybeToBool)
+                                       M.delete
+          mapM_ sendDataOnly pkts
+
+          currSeqNo <- readTVar lastDeliverySeqNo
+          currQ <- readTVar deliveryQ
+          trace2 (nameTag ++ " current deliveryQ: " ++ show currQ ++
+                  ", currSeqNo: " ++ show currSeqNo) $ return ()
+ where
+  sendDataOnly pkt@(Packet {..})
+    | isData pktFlags = do
+      trace2 (nameTag ++ " actually delivering " ++ show pkt) $ return ()
+      P.send bsOut pktPayload
+    | otherwise = return True
 
 packetSeqIsBelow
   :: String
@@ -240,7 +283,7 @@ mergeEntries
 mergeEntries lastIx store lookupStore check = go lastIx
  where
   go i = do
-    ok <- check $ lookupStore i store
+    ok <- check $ lookupStore (i + 1) store
     if ok
       then go $! i + 1
       else return i
@@ -249,18 +292,21 @@ mergeAndPopEntriesBy
   :: TVar Int
   -> TVar s
   -> (Int -> s -> Maybe a)
+  -> (Maybe a -> STM Bool)
   -> (Int -> s -> s)
   -> STM [a]
-mergeAndPopEntriesBy lastNoVar storeVar lookupStore deleteStore =
+mergeAndPopEntriesBy lastNoVar storeVar lookupStore check deleteStore =
   withTVar lastNoVar $ \ lastNo -> do
     withTVar storeVar $ \ store -> do
-      newNo <- mergeEntries lastNo store lookupStore $ const (return True)
+      newNo <- mergeEntries lastNo store lookupStore check
       let ixs = [lastNo + 1..newNo]
           vals = map (fromJust . flip lookupStore store) ixs
       return $ (foldr deleteStore store ixs, (newNo, vals))
  where
   fromJust (Just x) = x
   fromJust _ = error "mergeEntriesBy.fromJust: got Nothing"
+
+maybeToBool = maybe False (const True)
 
 onPacket
   :: String
@@ -297,24 +343,37 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo deliver
       else do
         mbInfo <- unsingleton . Ix.getEQ (DataSeq pktSeqNo) <$> readTVar inQ
         -- ^ Check if we already stored this DATA pkt
-        ackEchoPkt <- case mbInfo of
+        mbAckEchoPkt <- case mbInfo of
           Nothing -> do
             -- Not stored and haven't send a ACK-ECHO yet.
             seqNo <- genSeqNo
             let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
             modifyTVar' inQ $ Ix.insert $ inputEntry pkt replyPkt
-            return replyPkt
-          Just (InputEntry {..}) -> do
-            return ieAckEchoPkt
+            return $ Just replyPkt
+          Just (InputEntry {..}) -> if ieAcked
+            -- if acked: send nothing since remote already know this is
+            -- received.
+            then return Nothing
+            else return $ Just ieAckEchoPkt
         -- Anyway, send the ackEcho once (more).
-        void $ P.send pktOut ackEchoPkt
+        trace2 (nameTag ++ " sendAckEcho " ++ show mbAckEchoPkt) $ return ()
+        void $ maybe (return True) (sendPacket "[send/onDATA] " pktOut)
+                     mbAckEchoPkt
 
   | isAckEcho pktFlags = do
     -- ^ ACK-ECHO: Remove the data packet in the outQ and send an ACK.
     deliver pkt
     modifyTVar' outQ $ M.delete pktAckNo
-    P.send pktOut $ Packet (-1) pktSeqNo [ACK] B.empty
-    return ()
+    sendPacket "[send/ACK] " pktOut $ Packet (-1) pktSeqNo [ACK] B.empty
+    shallIgnore <- packetSeqIsBelow (nameTag ++ "/inQ") lastInQAckNo pkt
+    if shallIgnore
+      then return ()
+      else do
+        traceInQ "before insert"
+        insertDummyToInQ
+        traceInQ "after insert, before merge"
+        mergeInQ
+        traceInQ "after merge"
 
   | isAck pktFlags = do
     -- ^ ACK: Remove the ACK-ECHO packet in the inQ and try to merge
@@ -322,20 +381,49 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo deliver
     mbInfo <- unsingleton . Ix.getEQ (AckEchoSeq pktAckNo) <$> readTVar inQ
     case mbInfo of
       Nothing -> return ()
-      Just (InputEntry {..}) -> do
-        void $ mergeAndPopEntriesBy lastInQAckNo inQ (ixLookup . DataSeq)
-                                    deleteByIx
+      Just entry -> do
+        modifyTVar' inQ ( Ix.insert (entry { ieAcked = True })
+                        . Ix.delete entry
+                        )
+        mergeInQ
+
  where
   listToMaybe [] = Nothing
   listToMaybe [x] = Just x
   listToMaybe _ = error "listToMaybe: too many items"
 
+  traceInQ x = do
+    q <- readTVar inQ
+    traceM $ nameTag ++ " inQ " ++ x ++ ": " ++ show q
+
+  unsingleton :: (Typeable s, Data s, Ix.Indexable s, Ord s)
+              => Ix.IxSet s -> Maybe s
   unsingleton = listToMaybe . Ix.toList
 
+  ixLookup :: (Typeable k, Typeable s, Data s, Data k, Ord s, Ix.Indexable s)
+           => k -> Ix.IxSet s -> Maybe s
   ixLookup k s = unsingleton (Ix.getEQ k s)
 
-  deleteByIx i s = let Just a = listToMaybe $ Ix.toList $ Ix.getEQ i s
+  checkAck Nothing = False
+  checkAck (Just (InputEntry {..})) = ieAcked
+
+  deleteByIx i s = let Just a = listToMaybe $ Ix.toList $
+                                  Ix.getEQ (DataSeq i) s
                     in Ix.delete a s
+
+  -- When pkt is an ACKECHO
+  insertDummyToInQ = do
+    let dummy = inputEntryDummy pkt
+    modifyTVar' inQ $ Ix.insert dummy
+    traceM $ nameTag ++ " insertDummy " ++ show dummy
+    return ()
+
+  mergeInQ = do
+    merged <- mergeAndPopEntriesBy lastInQAckNo inQ (ixLookup . DataSeq)
+                                   (return . checkAck) deleteByIx
+    afterMerge <- readTVar inQ
+    trace2 (nameTag ++ " merged " ++ show (length merged) ++ ": " ++
+            show merged ++ ", after: " ++ show afterMerge) $ return ()
 
 isData xs = xs == []
 isAckEcho xs = isAck xs && ECHO `elem` xs
