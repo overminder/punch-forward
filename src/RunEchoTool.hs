@@ -17,9 +17,7 @@ main = do
       punchAction = if isServer then Listen else Connect
       runEcho = if isServer then runEchoServer else runEchoClient
       isRaw = read sIsRaw
-
-  let
-    (serverHost, serverPort) = Config.exchangeServer
+      (serverHost, serverPort) = Config.exchangeServer
 
   (addr, sock) <- startClient (serverHost, serverPort) punchAction Config.peerId
 

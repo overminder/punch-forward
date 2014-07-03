@@ -32,6 +32,48 @@ above.
 
 Hmm...
 
+### Diagram
+
+A input packet queue.
+
+    [Packet flag]
+    0b000
+        ^ -- Received and ack-echo sent (0/1)
+       ^ -- Delivered (0/2)
+      ^ -- Acked (0/4)
+
+In the current implementation, packets are delivered only after their
+ACKs have been received. This can be implemented easily but will introduce
+high latency.
+
+Only two input queues are managed in the current implementation. One (`inQ`)
+is used to store all of the received DATA packets. Once an ACK has been
+received for a DATA packet, the packet will be moved from `inQ` to
+`deliveryQ` and waits for delivery.
+
+    [Current]
+     -  Seq No  + 
+    77771150111101
+       ^ Last delivered.
+        ^ First non-acked. (Can also be 0 -- i.e. not received)
+
+A new implement aims to reduce the latency by delivery DATA packets before
+their ACKS are received.
+
+`inQ` should still be maintained. However, it's now totally separated from
+the `deliveryQ`. When a new DATA packet is received, it's put into both
+queues. `inQ` maintains the ACK state while `deliveryQ` maintains the
+delivery state.
+
+    [Delivery Before ACK]
+     -  Seq No  + 
+    77773051051101
+        ^ Last delivered. (Can also be 0 -- i.e. not received. though
+                           that will cause the last delivery to be its
+                           predecessor.)
+         ^ First non-received
+          ^ First acked
+
 ## Implementation
 
 The current implementation definitely needs not to be optimized for
