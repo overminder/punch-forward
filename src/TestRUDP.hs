@@ -2,6 +2,7 @@
     OverloadedStrings #-}
 
 import Control.Applicative
+import Control.Exception
 import Control.Concurrent hiding (yield)
 import Control.Concurrent.STM
 import Control.Concurrent.Async
@@ -44,7 +45,7 @@ mkUnreliablePipe (UnreliableOption {..}) = do
           -- Check if we need to duplicate it.
           dupRate <- uniform uoRandGen :: IO Double
           let
-            dupNum = if dupRate > 0.5 then 10 else 1
+            dupNum = if dupRate > 0.9 then 2 else 1
             things = replicate dupNum thing
               
           forM_ things $ \ thing -> do
@@ -62,11 +63,6 @@ testEcho option = monadicIO $ do
   bss <- pick $ replicateM 100 arbitrary
   --let bss = ["Hello", "World", "Bye"]
   run $ propEcho option bss
-
-logPacket tag = forever $ do
-  pkt <- await
-  liftIO $ putStrLn $ tag ++ " " ++ showPacket pkt
-  yield pkt
 
 propEcho mbOption bss = do
   let
@@ -88,15 +84,17 @@ propEcho mbOption bss = do
   localT <- async $ do
     (localBsIn, localBsOut) <- establish
       (localPktRIn, localPktWOut) "local"
-    --mapM_ (atomically . P.send localBsOut) bss
-    results <- forM bss $ \ bs -> do
+    mapM_ (atomically . P.send localBsOut) bss
+    forM_ bss $ \ bs -> do
       traceM "sending..."
-      atomically $ P.send localBsOut bs
+      --atomically $ P.send localBsOut bs
       traceM "receiving..."
       Just bs' <- atomically $ P.recv localBsIn
       traceM "one iter done..."
-      return $ bs == bs'
-    return $ all id results
+      if bs /= bs'
+        then throwIO (userError "BS comparision failed")
+        else return ()
+    return True
 
   let
     loggerPipe :: Show a => Pipe a a IO ()
@@ -111,12 +109,14 @@ propEcho mbOption bss = do
     -- remote is an echo server
     runEffect $ P.fromInput remoteBsIn >-> P.toOutput remoteBsOut
 
-  startTransport (P.fromInput localPktWIn >-> logPacket "localSend")
+  startTransport (P.fromInput localPktWIn)
                  (P.toOutput remotePktROut)
-  startTransport (P.fromInput remotePktWIn >-> logPacket "remoteSend")
+  startTransport (P.fromInput remotePktWIn)
                  (P.toOutput localPktROut)
 
   wait localT
+
+mkBss n = take n (repeat . BU8.fromString . show $ replicate 100 'a')
 
 main = do
   [sDelay, sDropRate, sNumItems] <- getArgs
@@ -126,7 +126,8 @@ main = do
     dropRate = maybe 0.1 id $ readMaybe sDropRate
     numItems = maybe 100 id $ readMaybe sNumItems
     unreliableOption = UnreliableOption rndGen delay dropRate
-    bss = map (BU8.fromString . show) (take numItems [0..])
+    bss = mkBss numItems
+    --bss = map (BU8.fromString . show) (take numItems [0..])
     --bss = map BU8.fromString $ words "Hello world, this is sparta yay huh"
   --quickCheck $ testEcho reliableOption
   --quickCheck $ testEcho unreliableOption
