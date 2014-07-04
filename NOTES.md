@@ -129,9 +129,9 @@ And for throughoutput, the time used in sending in 100k packets under
 1ms latency and 0.1% drop rate:
 
 $ time ./TestProtocol 1000 0.001 100000
-real    0m2.854s
-user    0m2.763s
-sys     0m0.069s
+^C^C^C^C^C
 
-That's 40MB/s in one direction.
+And previously the non-fast-delivery version used 2s. This is caused by
+larger memory consumption. We might need to add congestion control
+(e.g. through windowing) here.
 

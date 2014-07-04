@@ -30,7 +30,7 @@ import System.Random.MWC
 -- ^ Not crypto though
 import qualified Network.Socket.ByteString as SB
 import Network.Socket
-import qualified Data.IxSet as Ix
+import qualified TIMap as TM
 import Text.Printf
 import Control.DeepSeq
 -- ^ For IxSet's leak
@@ -38,11 +38,13 @@ import Control.DeepSeq
 import Util
 
 -- This should of course be more low-level (like a c-struct).
+-- However it seems that the strictness annotations in this type seems to
+-- be not affecting the performance..
 data Packet
   = Packet {
-    pktSeqNo :: !Int,
-    pktAckNo :: !Int,
-    pktFlags :: ![PacketFlag],
+    pktSeqNo   :: !Int,
+    pktAckNo   :: !Int,
+    pktFlags   :: ![PacketFlag],
     pktPayload :: !B.ByteString
   }
   deriving (Show, Typeable, Data)
@@ -75,40 +77,35 @@ data ConnectionError
 
 type Mailbox a = (P.Input a, P.Output a)
 
--- To use with IxSet.
--- XXX: overkill?
+-- Strictness not affecting the performance here.
 data InputEntry = InputEntry {
-  ieDataSeq :: !DataSeq,
-  ieAckEchoSeq :: !AckEchoSeq,
-  ieDataPkt :: !Packet,
+  ieDataPkt    :: !Packet,
   ieAckEchoPkt :: !Packet,
-  ieAcked :: !Bool
+  ieAcked      :: !Bool
 }
   deriving (Show, Typeable, Data)
 
-instance Eq InputEntry where
-  (==) = (==) `on` ieDataSeq
-
-instance Ord InputEntry where
-  compare = comparing ieDataSeq
-
-inputEntry :: Packet -> Packet -> InputEntry
+inputEntry :: Packet -> Packet -> ((DataSeq, AckEchoSeq), InputEntry)
 inputEntry dataPkt ackEchoPkt
-  = InputEntry (DataSeq $ pktSeqNo dataPkt)
-               (AckEchoSeq $ pktSeqNo ackEchoPkt)
-               dataPkt
-               ackEchoPkt
-               False
+  = ( ( DataSeq $ pktSeqNo dataPkt
+      , AckEchoSeq $ pktSeqNo ackEchoPkt
+      )
+    , InputEntry dataPkt
+                 ackEchoPkt
+                 False
+    )
 
 -- XXX: ugly hack. This makes a inputEntry from an ACKECHO from remote
 -- with acked=True.
-inputEntryDummy :: Packet -> InputEntry
+inputEntryDummy :: Packet -> ((DataSeq, AckEchoSeq), InputEntry)
 inputEntryDummy remoteAckEchoPkt
-  = InputEntry (DataSeq $ pktSeqNo remoteAckEchoPkt)
-               (AckEchoSeq (-1))
-               remoteAckEchoPkt
-               remoteAckEchoPkt
-               True
+  = ( ( DataSeq $ pktSeqNo remoteAckEchoPkt
+      , AckEchoSeq (-1)
+      )
+    , InputEntry remoteAckEchoPkt
+                 remoteAckEchoPkt
+                 True
+    )
 
 newtype DataSeq = DataSeq Int
   deriving (Show, Eq, Ord, Typeable, Data)
@@ -116,14 +113,8 @@ newtype DataSeq = DataSeq Int
 newtype AckEchoSeq = AckEchoSeq Int
   deriving (Show, Eq, Ord, Typeable, Data)
 
-instance Ix.Indexable InputEntry where
-  empty = Ix.ixSet
-    [ Ix.ixGen (Ix.Proxy :: Ix.Proxy DataSeq)
-    , Ix.ixGen (Ix.Proxy :: Ix.Proxy AckEchoSeq)
-    ]
-
 -- XXX: Shall we call some of them `control blocks` instead?
-type InputQueue = Ix.IxSet InputEntry
+type InputQueue = TM.TIMap DataSeq AckEchoSeq InputEntry
 type OutputQueue = M.Map Int Packet
 type DeliveryQueue = M.Map Int Packet
 
@@ -148,7 +139,7 @@ establish
   -- ^ Connected endpoints. Assume that bytestrings are already split into
   -- smaller pieces.
 establish pktMailbox@(pktIn, pktOut) nameTag = do
-  inQ <- newTVarIO Ix.empty :: IO (TVar InputQueue)
+  inQ <- newTVarIO TM.empty :: IO (TVar InputQueue)
   outQ <- newTVarIO M.empty :: IO (TVar OutputQueue)
   deliveryQ <- newTVarIO M.empty :: IO (TVar DeliveryQueue)
 
@@ -165,23 +156,36 @@ establish pktMailbox@(pktIn, pktOut) nameTag = do
     genSeqNo = modifyTVarDeep lastUsedSeqNo (+1) *> readTVar lastUsedSeqNo
     deliver = deliverPacket nameTag lastDeliveredSeqNo deliveryQ bsROut
 
-  readPktT <- async $ forever $ atomically $ do
-    Just pkt <- P.recv pktIn
-    onPacket nameTag pktOut pkt genSeqNo (void . deliver)
-             inQ lastInQAckNo outQ
+  readPktT <- async $ catchAndLog "resendPktT" $ forever $ atomically $ do
+    catchSTMAndLog "readPktT" $ do
+      Just pkt <- P.recv pktIn
+      onPacket nameTag pktOut pkt genSeqNo (void . deliver)
+               inQ lastInQAckNo outQ
 
-  resendPktT <- async $ forever $ do
+  resendPktT <- async $ catchAndLog "resendPktT" $ forever $ do
     threadDelay 100000
-    Just nSent <- atomically $ resendAll pktOut inQ outQ
-    if nSent /= 0
-      then trace2 (nameTag ++ " resendPkt: " ++ show nSent) return ()
+    mbNSent <- atomically $ do
+      catchSTMAndLog "resendPktT" $ resendAll pktOut inQ outQ
+    if mbNSent /= Nothing && mbNSent /= Just 0
+      then trace2 (nameTag ++ " resendPkt: " ++ show mbNSent) return ()
       else return ()
 
-  writePktT <- async $ forever $ atomically $ do
-    Just bs <- P.recv bsWIn
-    sendData nameTag pktOut genSeqNo bs outQ
+  writePktT <- async $ catchAndLog "writePktT" $ forever $ atomically $ do
+    catchSTMAndLog "writePktT (err means no more BS from app)" $ do
+      Just bs <- P.recv bsWIn
+      sendData nameTag pktOut genSeqNo bs outQ
 
   return (bsRIn, bsWOut)
+
+catchAndLog wat m =
+  m `catch` \ (e :: SomeException) -> do
+    putStrLn ("catchAndLog: " ++ wat ++ " " ++ show e)
+    return ()
+
+catchSTMAndLog wat m =
+  m `catchSTM` \ (e :: SomeException) -> do
+    infoM ("catchSTMAndLog: " ++ wat ++ " " ++ show e)
+    error "Nothing to return for catchSTMAndLog..."
 
 sendData
   :: String
@@ -209,7 +213,7 @@ resendAll
   -> TVar OutputQueue
   -> STM (Maybe Int)
 resendAll pktOut inQ outQ = do
-  mapM_ sendInQ . Ix.toList =<< readTVar inQ
+  mapM_ sendInQ . TM.elems =<< readTVar inQ
   mapM_ (P.send pktOut) =<< readTVar outQ
   return Nothing
   --let
@@ -231,6 +235,7 @@ withTVar tv mf = do
   writeTVar tv $! deepseq2 v' v'
   return a
 
+-- modifyTVar' usually gives better performance.
 modifyTVarDeep :: NFData a => TVar a -> (a -> a) -> STM ()
 modifyTVarDeep va f = modifyTVar' va f'
  where
@@ -238,6 +243,7 @@ modifyTVarDeep va f = modifyTVar' va f'
           in deepseq2 a' a'
 
 deepseq2 a b = b
+-- ^ Over-strictness usually gives degraded performance.
 
 deliverPacket
   :: String
@@ -264,7 +270,7 @@ deliverPacket nameTag lastDeliverySeqNo deliveryQ bsOut pkt
 
           currSeqNo <- readTVar lastDeliverySeqNo
           currQ <- readTVar deliveryQ
-          infoM $ nameTag ++ " deliveryQ.size: " ++ show (M.size currQ) ++
+          traceM $ nameTag ++ " deliveryQ.size: " ++ show (M.size currQ) ++
                   ", currSeqNo: " ++ show currSeqNo
  where
   sendDataOnly pkt@(Packet {..})
@@ -331,7 +337,7 @@ onPacket
   -> (Packet -> STM ())
   -- ^ Deliver the packet idempotently
   -> TVar InputQueue
-  -- ^ IxSet of (data-pkt, ACKECHO-pkt)
+  -- ^ TIMap of (data-pkt, ACKECHO-pkt)
   -- When an ACK for an ACKECHO-pkt is received, the corresponding entry
   -- will be deleted.
   -> TVar Int
@@ -356,16 +362,17 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo deliver
     if shallIgnore
       then return ()
       else do
-        mbInfo <- unsingleton . Ix.getEQ (DataSeq pktSeqNo) <$> readTVar inQ
+        mbInfo <- unsingleton . TM.lookup1 (DataSeq pktSeqNo)
+              <$> readTVar inQ
         -- ^ Check if we already stored this DATA pkt
         mbAckEchoPkt <- case mbInfo of
           Nothing -> do
             -- Not stored and haven't send a ACK-ECHO yet.
             seqNo <- genSeqNo
             let replyPkt = Packet seqNo pktSeqNo [ACK, ECHO] B.empty
-            modifyTVarDeep inQ $ Ix.insert $ inputEntry pkt replyPkt
+            modifyTVarDeep inQ $ uncurry TM.insert $ inputEntry pkt replyPkt
             return $ Just replyPkt
-          Just (InputEntry {..}) -> if ieAcked
+          Just (k2, InputEntry {..}) -> if ieAcked
             -- if acked: send nothing since remote already know this is
             -- received.
             then return Nothing
@@ -390,13 +397,12 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo deliver
   | isAck pktFlags = do
     -- ^ ACK: Remove the ACK-ECHO packet in the inQ and try to merge
     -- and remove ACKed packets.
-    mbInfo <- unsingleton . Ix.getEQ (AckEchoSeq pktAckNo) <$> readTVar inQ
+    let k2 = AckEchoSeq pktAckNo
+    mbInfo <- unsingleton . TM.lookup2 k2 <$> readTVar inQ
     case mbInfo of
       Nothing -> return ()
-      Just entry -> do
-        modifyTVarDeep inQ ( Ix.insert (entry { ieAcked = True })
-                        . Ix.delete entry
-                        )
+      Just (k1, entry) -> do
+        modifyTVarDeep inQ $ TM.insert (k1, k2) (entry { ieAcked = True })
         mergeInQ
 
  where
@@ -408,35 +414,34 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo deliver
     q <- readTVar inQ
     traceM $ nameTag ++ " inQ " ++ x ++ ": " ++ show q
 
-  unsingleton :: (Typeable s, Data s, Ix.Indexable s, Ord s)
-              => Ix.IxSet s -> Maybe s
-  unsingleton = listToMaybe . Ix.toList
-
-  ixLookup :: (Typeable k, Typeable s, Data s, Data k, Ord s, Ix.Indexable s)
-           => k -> Ix.IxSet s -> Maybe s
-  ixLookup k s = unsingleton (Ix.getEQ k s)
+  unsingleton = listToMaybe . M.toList
 
   checkAck Nothing = False
   checkAck (Just (InputEntry {..})) = ieAcked
 
-  deleteByIx i s = let Just a = listToMaybe $ Ix.toList $
-                                  Ix.getEQ (DataSeq i) s
-                    in Ix.delete a s
-
   -- When pkt is an ACKECHO
   insertDummyToInQ = do
-    let dummy = inputEntryDummy pkt
-    modifyTVarDeep inQ $ Ix.insert dummy
+    let (ks, dummy) = inputEntryDummy pkt
+    modifyTVarDeep inQ $ TM.insert ks dummy
     traceM $ nameTag ++ " insertDummy " ++ show dummy
     return ()
 
+  lookupDataSeq i m =
+    let mbGot = unsingleton . TM.lookup1 (DataSeq i) $ m
+     in snd <$> mbGot
+
+  deleteByDataSeq i m =
+    let k1 = DataSeq i
+        Just (k2, _) = unsingleton $ TM.lookup1 k1 m
+     in TM.delete (k1, k2) m
+
   mergeInQ = do
-    merged <- mergeAndPopEntriesBy lastInQAckNo inQ (ixLookup . DataSeq)
-                                   (return . checkAck) deleteByIx
+    merged <- mergeAndPopEntriesBy lastInQAckNo inQ (lookupDataSeq)
+                                   (return . checkAck) deleteByDataSeq
     afterMerge <- readTVar inQ
     traceM (nameTag ++ " merged " ++ show (length merged) ++ ": " ++
             show merged)
-    infoM (nameTag ++ " inQ.size: " ++ show (Ix.size afterMerge))
+    traceM (nameTag ++ " inQ.size: " ++ show (TM.size afterMerge))
 
 isData xs = xs == []
 isAckEcho xs = isAck xs && ECHO `elem` xs

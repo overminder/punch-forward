@@ -10,7 +10,7 @@ trace2 _ a = a
 
 traceM s = trace2 s $ return ()
 
-infoM s = trace2 s $ return ()
+infoM s = trace s $ return ()
 
 cutBsTo :: Monad m => Int -> Pipe B.ByteString B.ByteString m ()
 cutBsTo n = forever $ do

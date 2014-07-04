@@ -85,12 +85,14 @@ propEcho mbOption bss = do
     (localBsIn, localBsOut) <- establish
       (localPktRIn, localPktWOut) "local"
     mapM_ (atomically . P.send localBsOut) bss
-    forM_ bss $ \ bs -> do
-      traceM "sending..."
+    forM_ (zip [0..] bss) $ \ (i, bs) -> do
+      --putStrLn $ "sending... " ++ show i
       --atomically $ P.send localBsOut bs
-      traceM "receiving..."
-      Just bs' <- atomically $ P.recv localBsIn
-      traceM "one iter done..."
+      --putStrLn "receiving..."
+      Just bs' <- (atomically $ P.recv localBsIn) `catch`
+        \ (e :: SomeException) -> do putStrLn $ "recv failed: " ++ show e
+                                     return Nothing
+      --putStrLn "one iter done..."
       if bs /= bs'
         then throwIO (userError "BS comparision failed")
         else return ()
@@ -107,7 +109,9 @@ propEcho mbOption bss = do
     (remoteBsIn, remoteBsOut) <- establish
       (remotePktRIn, remotePktWOut) "remote"
     -- remote is an echo server
-    runEffect $ P.fromInput remoteBsIn >-> P.toOutput remoteBsOut
+    (runEffect $ P.fromInput remoteBsIn >-> P.toOutput remoteBsOut) `catch`
+      \ (e :: SomeException) -> do putStrLn $ "remoteT failed: " ++ show e
+                                   return ()
 
   startTransport (P.fromInput localPktWIn)
                  (P.toOutput remotePktROut)
