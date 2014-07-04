@@ -32,53 +32,96 @@ above.
 
 Hmm...
 
+### Diagram
+
+A input packet queue.
+
+    [Packet flag]
+    0b000
+        ^ -- Received and ack-echo sent (0/1)
+       ^ -- Delivered (0/2)
+      ^ -- Acked (0/4)
+
+In the current implementation, packets are delivered only after their
+ACKs have been received. This can be implemented easily but will introduce
+high latency.
+
+Only two input queues are managed in the current implementation. One (`inQ`)
+is used to store all of the received DATA packets. Once an ACK has been
+received for a DATA packet, the packet will be moved from `inQ` to
+`deliveryQ` and waits for delivery.
+
+    [Current]
+     -  Seq No  + 
+    77771150111101
+       ^ Last delivered.
+        ^ First non-acked. (Can also be 0 -- i.e. not received)
+
+A new implement aims to reduce the latency by delivery DATA packets before
+their ACKS are received.
+
+`inQ` should still be maintained. However, it's now totally separated from
+the `deliveryQ`. When a new DATA packet is received, it's put into both
+queues. `inQ` maintains the ACK state while `deliveryQ` maintains the
+delivery state.
+
+    [Delivery Before ACK]
+     -  Seq No  + 
+    77773051051101
+        ^ Last delivered. (Can also be 0 -- i.e. not received. though
+                           that will cause the last delivery to be its
+                           predecessor.)
+         ^ First non-received
+          ^ First acked
+
 ## Implementation
 
 The current implementation definitely needs not to be optimized for
 performance. It uses `Map` to record packets and `STM` to handle concurrency.
 
-### Performance (as of 5 June)
+### Performance (as of 3 July)
 
-XXX: I just found that according to Wikipedia, a 0.1% drop rate would be
-tolerable, and anything above that will affect the connection quality
-significantly. Huh..
+On July 3 a fast-delivery patch was applied, which greatly improved
+the latency.
 
 Sending and echoing 100 packets (sequentially, where the next data segment
 is not sent before the echo reply is received) using 1 ms, 5 ms and 50 ms
 as the maximum delays, and 0.1% as the packet drop rates:
 
     $ time ./TestProtocol 1000 0.001
-    real    0m0.837s
-    user    0m0.058s
-    sys     0m0.056s
+    real    0m0.389s
+    user    0m0.076s
+    sys     0m0.036s
     
     $ time ./TestProtocol 5000 0.001
-    real    0m2.146s
-    user    0m0.090s
-    sys     0m0.092s
+    real    0m1.625s
+    user    0m0.133s
+    sys     0m0.071s
     
     $ time ./TestProtocol 50000 0.001
-    real    0m12.032s
-    user    0m0.146s
-    sys     0m0.164s
+    real    0m5.723s
+    user    0m0.221s
+    sys     0m0.142s
 
-This implies that the average roundtrip time will usually be 8ms, 20ms
-and 120ms respectively.
+This implies that the average roundtrip time will usually be 4ms, 16ms
+and 57ms respectively.
 
 If we send all the packets before starting to wait, the time will be:
+XXX: Since grace termination (FIN) is not implemented, the result below
+should not be treated seriously.
 
     $ time ./TestProtocol 1000 0.001 100
-    real    0m0.283s
-    user    0m0.010s
-    sys     0m0.010s
+    real    0m0.030s
+    user    0m0.022s
+    sys     0m0.007s
     
     $ time ./TestProtocol 50000 0.001 100
-    real    0m0.412s
+    real    0m0.163s
     user    0m0.032s
     sys     0m0.027s
     
     $ time ./TestProtocol 500000 0.001 100
-    real    0m0.718s
+    real    0m0.318s
     user    0m0.026s
     sys     0m0.023s
 
@@ -86,9 +129,9 @@ And for throughoutput, the time used in sending in 100k packets under
 1ms latency and 0.1% drop rate:
 
 $ time ./TestProtocol 1000 0.001 100000
-real    0m2.854s
-user    0m2.763s
-sys     0m0.069s
+^C^C^C^C^C
 
-That's 40MB/s in one direction.
+And previously the non-fast-delivery version used 2s. This is caused by
+larger memory consumption. We might need to add congestion control
+(e.g. through windowing) here.
 
