@@ -1,3 +1,4 @@
+import Network
 import Control.Monad
 import Control.Concurrent hiding (yield)
 import Control.Concurrent.Async
@@ -11,7 +12,7 @@ import Tool.Echo
 import Util
 import qualified Config
 
-main = do
+main = withSocketsDo $ do
   [sRole, sIsRaw] <- getArgs
   let isServer = sRole == "Server"
       punchAction = if isServer then Listen else Connect

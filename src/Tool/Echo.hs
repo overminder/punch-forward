@@ -23,18 +23,19 @@ runEchoClient pktIn pktOut = once 0
   timeoutMs = fromIntegral $ floor 5e6
   once :: Int -> IO ()
   once i = do
-    let pkt = BU8.fromString (show i)
+    let pkt = BU8.fromString (show i ++ replicate 126 ' ')
     runEffect $ yield pkt >-> pktOut
     (ok, timeUsed, nTries) <- expectWithTimeout pkt onceInterval pktIn
-    let timeUsedF = (fromIntegral timeUsed / 1e6) :: Double
+    let timeUsedF = (fromIntegral timeUsed / 1e3) :: Double
     if ok
-      then printf "udp_seq=%d udp_tries=%d time=%.3f ms\n" i nTries timeUsedF
+      then printf "%d bytes packet: udp_seq=%d udp_tries=%d time=%.3f ms\n"
+                  (B.length pkt) i nTries timeUsedF
       else printf "receive time out (udp_tries=%d)\n" nTries
     threadDelay (onceInterval - timeUsed)
     once $! i + 1
 
 expectWithTimeout
-  :: (Eq a)
+  :: (Show a, Eq a)
   => a
   -> Int
   -> Producer a IO ()
@@ -42,7 +43,9 @@ expectWithTimeout
 expectWithTimeout a timeoutMs prod = do
   t0 <- getCurrentTime
   nTriesRef <- newIORef 0 :: IO (IORef Int)
+  --printf "[debug] Start loop\n"
   mbRes <- timeout timeoutMs $ loop 0 prod nTriesRef
+  --printf "[debug] Done loop\n"
   nTries <- readIORef nTriesRef
   t1 <- getCurrentTime
   let dt = floor $ (t1 `diffUTCTime` t0 * 1e6)
@@ -55,7 +58,10 @@ expectWithTimeout a timeoutMs prod = do
       Left () -> error "expectWithTimeout: remote closed?"
       Right (a', p') -> if a' == a
         then return ()
-        else loop (nTries + 1) p' nTriesRef
+        else do
+          --printf "tries #%d for %s: ignoring packet %s\n"
+          --       (nTries + 1) (show a) (show a')
+          loop (nTries + 1) p' nTriesRef
 
 -- LOL
 runEchoServer pktIn pktOut = runEffect $ pktIn >-> pktOut
