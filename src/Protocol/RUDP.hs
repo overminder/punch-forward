@@ -19,7 +19,8 @@ import qualified Data.ByteString as B
 import Data.Foldable
 import Data.Traversable
 import qualified Data.Serialize as S
-import Prelude hiding (forM, forM_, mapM, mapM_, all, elem, foldr, concatMap)
+import Prelude hiding (forM, forM_, mapM, mapM_, all, elem, foldr, concatMap,
+                       notElem)
 import Pipes
 import qualified Pipes.Concurrent as P
 import Control.Concurrent hiding (yield)
@@ -34,6 +35,7 @@ import qualified TIMap as TM
 import Text.Printf
 import Control.DeepSeq
 -- ^ For IxSet's leak
+import Data.Time
 
 import Util
 
@@ -444,8 +446,8 @@ onPacket nameTag pktOut pkt@(Packet {..}) genSeqNo deliver
     traceM (nameTag ++ " inQ.size: " ++ show (TM.size afterMerge))
 
 isData xs = xs == []
-isAckEcho xs = isAck xs && ECHO `elem` xs
-isAck = (ACK `elem`)
+isAckEcho xs = ACK `elem` xs && ECHO `elem` xs
+isAck xs = ACK `elem` xs && ECHO `notElem` xs
 
 -- Serialization
 putPacket :: Packet -> S.Put
@@ -490,6 +492,42 @@ fromUdpSocket s addr size = forever $ do
     then return ()
     else yield bs
 
+mkGenericRateLogger
+  :: Int
+  -- ^ sleep duration
+  -> a
+  -- ^ default value for data-to-log
+  -> (p -> a -> a)
+  -- ^ packet -> old data-to-log -> new data-to-log
+  -> (a -> Int -> IO ())
+  -- ^ data-to-log -> elapsed -> LogAction
+  -> Pipe p p IO ()
+mkGenericRateLogger intervalMs a iterF logger = do
+  aRef <- liftIO $ do
+    aRef <- newTVarIO a
+    async $ forever $ do
+      t0 <- getCurrentTime
+      threadDelay intervalMs
+      t1 <- getCurrentTime
+      currA <- atomically $ swapTVar aRef a
+      let elapsed = (t1 `diffUTCTime` t0) * 1e6
+      logger currA (floor elapsed)
+    return aRef
+  forever $ do
+    p <- await
+    liftIO $ atomically $ modifyTVar' aRef (iterF p)
+    yield p
+
+mkByteRateLogger
+  :: Int
+  -> (Int -> Int -> IO ())
+  -- ^ nbytes -> elapsed -> LogAction
+  -> Pipe B.ByteString B.ByteString IO ()
+mkByteRateLogger intervalMs logger
+  = mkGenericRateLogger intervalMs 0 iterF logger
+ where
+  iterF bs count = count + B.length bs
+
 mkPacketPipe
   :: SockAddr
   -> Int
@@ -513,9 +551,62 @@ mkPacketPipe addr bufSize s = do
         Left _ -> return ()
         Right x -> yield x
 
+    -- Some ad-hoc packet status loggers
+
+    logByteRate :: String -> Int -> Int -> IO ()
+    logByteRate tag count elapsed = do
+      printf "%s: %d KB/s (%d bytes in %d microseconds)\n"
+             tag
+             ((floor (fromIntegral (floor 1e3 * count) / fromIntegral elapsed))
+              :: Int)
+             count elapsed
+
+    logSendBR = mkByteRateLogger (floor 5e6) (logByteRate "send")
+    logRecvBR = mkByteRateLogger (floor 5e6) (logByteRate "recv")
+
+    iterPktRate pkt@(Packet {..})
+                (npkt, ntotalbytes, nplbytes, nacks, ndatas, naes)
+      = (npkt + 1, ntotalbytes + B.length pktBs,
+         nplbytes + B.length pktPayload,
+         nacks + ackincr,
+         ndatas + dataincr,
+         naes + aeincr)
+     where
+      pktBs = S.runPut (putPacket pkt)
+      ackincr | isAck pktFlags = 1
+              | otherwise = 0
+      dataincr | isData pktFlags = 1
+               | otherwise = 0
+      aeincr | isAckEcho pktFlags = 1
+             | otherwise = 0
+
+    displayPktRateInfo
+      :: String -> (Int, Int, Int, Int, Int, Int) -> Int -> IO ()
+    displayPktRateInfo tag (npkt, ntotalbytes, nplbytes, nacks, ndatas, naes)
+                       elapsed = do
+      printf ("%s: %.2f packets/s, total %.2f KB/s, payload %.2f KB/s\n" ++
+              "payload efficiency: %.2f%%, ACKs: %.2f%%, DATAs: %.2f%%" ++
+              ", ACK/E: %.2f%%\n")
+             tag
+             (npkt `floatDiv` elapsed * 1e6)
+             (ntotalbytes `floatDiv` elapsed * 1e3)
+             (nplbytes `floatDiv` elapsed * 1e3)
+             (nplbytes `floatDiv` ntotalbytes * 100)
+             (nacks `floatDiv` npkt * 100)
+             (ndatas `floatDiv` npkt * 100)
+             (naes `floatDiv` npkt * 100)
+     where
+      floatDiv a b = (fromIntegral a / fromIntegral b) :: Double
+
+    emptyPktInfo = (0,0,0,0,0,0)
+    logSendPkt = mkGenericRateLogger (floor 1e7) emptyPktInfo iterPktRate
+                                     (displayPktRateInfo "send")
+    logRecvPkt = mkGenericRateLogger (floor 1e7) emptyPktInfo iterPktRate
+                                     (displayPktRateInfo "recv")
+
   async $ runEffect $
-    P.fromInput pktRIn >-> serialized >-> toUdpSocket s addr
+    P.fromInput pktRIn >-> logSendPkt >-> serialized >-> toUdpSocket s addr
   async $ runEffect $
-    fromUdpSocket s addr bufSize >-> deserialized >-> P.toOutput pktWOut
+    fromUdpSocket s addr bufSize >-> deserialized >-> logRecvPkt >-> P.toOutput pktWOut
 
   return (pktWIn, pktROut)

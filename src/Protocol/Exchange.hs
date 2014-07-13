@@ -119,6 +119,7 @@ startClient (serverHostName, serverPort) ty cid = do
   peerAddr <- readPeerReply
   return (peerAddr, s)
 
+-- | This function is also provided by exch-svr/run.py
 startServer
   :: Int
   -- ^ Port
