@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module TIMap where
+module Network.PunchForward.TIMap where
 
 import Data.Function
 import Data.Ord

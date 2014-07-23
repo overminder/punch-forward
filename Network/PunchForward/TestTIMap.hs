@@ -2,7 +2,7 @@
 import Test.QuickCheck
 import Test.QuickCheck.Instances
 
-import qualified TIMap as TM
+import qualified Network.PunchForward.TIMap as TM
 import qualified Data.Map as M
 
 propInsertDelEmpty :: [Int] -> [Char] -> [String] -> Bool

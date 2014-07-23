@@ -1,4 +1,4 @@
-module Protocol.Forward where
+module Network.PunchForward.Protocol.Forward where
 
 import qualified Data.ByteString as B
 import Control.Monad

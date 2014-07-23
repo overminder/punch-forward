@@ -6,11 +6,11 @@ import qualified Pipes.Concurrent as P
 import Pipes
 import System.Environment
 
-import Protocol.RUDP
-import Protocol.Exchange
-import Tool.Echo
-import Util
-import qualified Config
+import Network.PunchForward.Protocol.RUDP
+import Network.PunchForward.Protocol.Exchange
+import Network.PunchForward.Tool.Echo
+import Network.PunchForward.Util
+import qualified Network.PunchForward.Config as Config
 
 main = withSocketsDo $ do
   [sRole, sIsRaw] <- getArgs

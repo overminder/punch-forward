@@ -1,5 +1,7 @@
 {-# LANGUAGE RecordWildCards, ScopedTypeVariables, OverloadedStrings #-}
 
+module Network.PunchForward.RunRemote where
+
 import qualified Data.ByteString as B
 import Control.Applicative
 import Control.Monad
@@ -7,13 +9,13 @@ import Pipes
 import qualified Pipes.Concurrent as P
 import Network.Socket
 
-import Protocol.Exchange
-import Protocol.RUDP
-import Protocol.Forward
-import Util
-import qualified Config
+import Network.PunchForward.Protocol.Exchange
+import Network.PunchForward.Protocol.RUDP
+import Network.PunchForward.Protocol.Forward
+import Network.PunchForward.Util
+import qualified Network.PunchForward.Config as Config
 
-main = withSocketsDo $ do
+run = do
   let
     (serverHost, serverPort) = Config.exchangeServer
 

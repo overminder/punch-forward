@@ -1,4 +1,4 @@
-module Util where
+module Network.PunchForward.Util where
 
 import Control.Monad
 import Pipes

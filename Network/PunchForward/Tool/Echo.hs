@@ -1,4 +1,4 @@
-module Tool.Echo where
+module Network.PunchForward.Tool.Echo where
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.UTF8 as BU8

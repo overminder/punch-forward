@@ -3,7 +3,7 @@
 
 -- Pipes-based UDP-to-reliable-protocol adapter
 
-module Protocol.RUDP where
+module Network.PunchForward.Protocol.RUDP where
 
 import Control.Applicative
 import Data.Bits
@@ -31,13 +31,13 @@ import System.Random.MWC
 -- ^ Not crypto though
 import qualified Network.Socket.ByteString as SB
 import Network.Socket
-import qualified TIMap as TM
 import Text.Printf
 import Control.DeepSeq
 -- ^ For IxSet's leak
 import Data.Time
 
-import Util
+import Network.PunchForward.Util
+import qualified Network.PunchForward.TIMap as TM
 
 -- This should of course be more low-level (like a c-struct).
 -- However it seems that the strictness annotations in this type seems to
