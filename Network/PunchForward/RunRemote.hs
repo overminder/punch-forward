@@ -19,11 +19,13 @@ run = do
   let
     (serverHost, serverPort) = Config.exchangeServer
 
-  (addr, sock) <- startClient (serverHost, serverPort) Listen Config.peerId
+  runWithAddrSock =<<
+    startClient (serverHost, serverPort) Listen Config.peerId
+
+runWithAddrSock (addr, sock) = do
   pipe <- mkPacketPipe addr 512 sock
   putStrLn "Server"
   (bsIn, rawBsOut) <- establish pipe "Server"
   let bsOut = cutBsTo 300 >-> P.toOutput rawBsOut
   simpleL2RForwardOnRemote Config.remotePort (P.fromInput bsIn, bsOut)
-
 
