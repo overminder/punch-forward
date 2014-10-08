@@ -15,7 +15,7 @@ main = withSocketsDo $ do
       R.runWithAddrSock =<<
         SP.punch Config.peerId Config.simplePort Config.simpleLocal
     ["--ls"] ->
-      R.runWithAddrSock =<<
+      L.runWithAddrSock =<<
         SP.punch Config.peerId Config.simplePort Config.simpleRemote
     _ -> putStrLn "usage: [program] [-r|-l]"
 
