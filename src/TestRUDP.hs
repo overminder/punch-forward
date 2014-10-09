@@ -1,6 +1,3 @@
-{-# LANGUAGE RecordWildCards, DeriveDataTypeable, ScopedTypeVariables,
-    OverloadedStrings #-}
-
 import Control.Applicative
 import Control.Exception
 import Control.Concurrent hiding (yield)
@@ -17,8 +14,8 @@ import Test.QuickCheck.Monadic
 import Text.Read
 import System.Environment
 
-import Network.PunchForward.Protocol.RUDP
-import Network.PunchForward.Util
+import Network.Punch.Peer.Reliable
+import Network.Punch.Util
 
 data UnreliableOption
   = UnreliableOption {

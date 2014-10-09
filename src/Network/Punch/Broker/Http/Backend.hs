@@ -1,4 +1,12 @@
-module Broker where
+module Network.Punch.Broker.Http.Backend
+  ( Broker
+  , newBroker
+  , bindListen
+  , accept
+  , connect
+  ) where
+
+import Network.Punch.Broker.Http.Types
 
 import Data.Time
 import Control.Applicative
@@ -7,17 +15,9 @@ import Control.Monad
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
 import qualified Data.Map as M
-import Network.Socket
+import Network.Socket (SockAddr (..), HostAddress)
 import System.Timeout
 import Text.Printf
-
-data ErrorCode
-  = AddrInUse
-  | NotBound
-  | Timeout
-  | NoAcceptor
-  | AlreadyAccepting
-  deriving (Show, Read)
 
 type VAddr = String
 data Listener
@@ -33,8 +33,8 @@ data Broker
     brListeners :: MVar (M.Map VAddr Listener)
   }
 
-new :: IO Broker
-new = do
+newBroker :: IO Broker
+newBroker = do
   broker <- Broker <$> newMVar M.empty
   startReaper broker
   return broker
@@ -126,4 +126,5 @@ reap Broker {..} = do
     let m' = M.filter ((now <) . lsExpiry) m
     printf "[Reaper] %d -> %d\n" (M.size m) (M.size m')
     return m'
+
 

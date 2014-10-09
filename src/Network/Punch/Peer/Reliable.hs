@@ -1,13 +1,9 @@
-{-# LANGUAGE RecordWildCards, DeriveDataTypeable, ScopedTypeVariables,
-    FlexibleInstances #-}
-
 -- Pipes-based UDP-to-reliable-protocol adapter
 
-module Network.PunchForward.Protocol.RUDP where
+module Network.Punch.Peer.Reliable where
 
 import Control.Applicative
 import Data.Bits
-import Data.Typeable
 import Data.Data
 import qualified Data.List as L
 import Data.Function
@@ -36,8 +32,8 @@ import Control.DeepSeq
 -- ^ For IxSet's leak
 import Data.Time
 
-import Network.PunchForward.Util
-import qualified Network.PunchForward.TIMap as TM
+import Network.Punch.Util
+import qualified Network.Punch.Util.TIMap as TM
 
 -- This should of course be more low-level (like a c-struct).
 -- However it seems that the strictness annotations in this type seems to

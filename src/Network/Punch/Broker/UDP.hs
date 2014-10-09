@@ -1,6 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, RecordWildCards #-}
-
-module Network.PunchForward.Protocol.Exchange (
+module Network.Punch.Broker.UDP (
   PacketType(..),
   startClient,
   startServer

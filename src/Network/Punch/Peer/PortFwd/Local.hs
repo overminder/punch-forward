@@ -1,6 +1,4 @@
-{-# LANGUAGE RecordWildCards, ScopedTypeVariables, OverloadedStrings #-}
-
-module Network.PunchForward.RunLocal where
+module Network.Punch.Peer.PortFwd.Local where
 
 import qualified Data.ByteString as B
 import Control.Applicative
@@ -9,12 +7,11 @@ import Pipes
 import qualified Pipes.Concurrent as P
 import Network.Socket
 
-import Network.PunchForward.Protocol.Exchange
-import Network.PunchForward.Protocol.RUDP
-import Network.PunchForward.Protocol.Forward
-import qualified Network.PunchForward.Protocol.SamePort as SP
-import Network.PunchForward.Util
-import qualified Network.PunchForward.Config as Config
+import Network.Punch.Broker.UDP
+import Network.Punch.Peer.Reliable
+import Network.Punch.Peer.PortFwd
+import Network.Punch.Util
+import qualified Config
 
 run = do
   let (serverHost, serverPort) = Config.exchangeServer

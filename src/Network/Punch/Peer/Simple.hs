@@ -1,5 +1,6 @@
-{-# LANGUAGE ViewPatterns #-}
-module Network.PunchForward.Protocol.SamePort (
+-- For NATs that keep the same port numbers for translated addresses.
+
+module Network.Punch.Peer.Simple (
   punch
 ) where
 
@@ -16,8 +17,6 @@ encodeGreeting :: Greeting -> String
 encodeGreeting = show
 
 connIdMismatch connId g = gConnId g /= connId
-
--- For NATs that don't translate port numbers.
 
 punch
   :: String

@@ -1,10 +1,10 @@
 import Network.Socket
 import System.Environment
 
-import qualified Network.PunchForward.Config as Config
-import qualified Network.PunchForward.Protocol.SamePort as SP
-import qualified Network.PunchForward.RunLocal as L
-import qualified Network.PunchForward.RunRemote as R
+import qualified Config
+import qualified Network.Punch.Peer.Simple as SP
+import qualified Network.Punch.Peer.PortFwd.Local as L
+import qualified Network.Punch.Peer.PortFwd.Remote as R
 
 main = withSocketsDo $ do
   args <- getArgs
