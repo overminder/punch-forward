@@ -102,20 +102,20 @@ accept Broker {..} waitMicros vAddr physAddr = do
       runRest
 
 connect :: Broker -> VAddr -> SockAddr -> IO (Either ErrorCode SockAddr)
-connect Broker {..} vAddr clientAddr = do
+connect (Broker {..}) vAddr clientAddr =
   withMVar brListeners $ \ listeners -> do
-  case M.lookup vAddr listeners of
-    Nothing ->
-      return (Left NotBound)
-    Just (Listener {..}) -> do
-      mbChans <- tryTakeMVar lsAcceptChan
-      case mbChans of
-        Nothing ->
-          return (Left NoAcceptor)
-        Just (serverAddrChan, clientAddrChan) -> do
-          serverAddr <- takeMVar serverAddrChan
-          putMVar clientAddrChan clientAddr
-          return (Right serverAddr)
+    case M.lookup vAddr listeners of
+      Nothing ->
+        return (Left NotBound)
+      Just (Listener {..}) -> do
+        mbChans <- tryTakeMVar lsAcceptChan
+        case mbChans of
+          Nothing ->
+            return (Left NoAcceptor)
+          Just (serverAddrChan, clientAddrChan) -> do
+            serverAddr <- takeMVar serverAddrChan
+            putMVar clientAddrChan clientAddr
+            return (Right serverAddr)
 --
 
 startReaper = async . forever . reap

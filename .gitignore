@@ -4,3 +4,7 @@
 Config.hs
 Main
 *.pyc
+.cabal-sandbox/
+cabal.sandbox.config
+dist-sandbox
+dist
