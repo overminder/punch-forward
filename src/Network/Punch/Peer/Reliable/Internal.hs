@@ -385,25 +385,6 @@ isData xs = xs == []
 isAckEcho xs = ACK `elem` xs && ECHO `elem` xs
 isAck xs = ACK `elem` xs && ECHO `notElem` xs
 
--- Serialization
-putPacket :: Packet -> S.Put
-putPacket (Packet {..}) = do
-  S.put pktSeqNo
-  S.put pktAckNo
-  S.put $ foldFlags pktFlags
-  S.put pktPayload
-
-getPacket :: S.Get Packet
-getPacket = Packet <$> S.get <*> S.get <*> (unfoldFlags <$> S.get) <*> S.get
-
-foldFlags :: Enum a => [a] -> Int
-foldFlags = foldr (flip setFlag) 0
-
-unfoldFlags :: (Bounded a, Enum a) => Int -> [a]
-unfoldFlags flag = concatMap check [minBound..maxBound]
- where
-  check a = if hasFlag flag a then [a] else []
-
 hasFlags :: Enum a => Int -> [a] -> Bool
 hasFlags flag xs = foldr combine True xs
  where
