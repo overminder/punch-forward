@@ -19,14 +19,14 @@ executable punch-forward
   main-is:             PunchFwd.hs
   -- other-modules:       
   default-language:    Haskell2010
-  default-extensions:    RecordWildCards, ScopedTypeVariables, OverloadedStrings, ViewPatterns, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable
+  default-extensions:    RecordWildCards, ScopedTypeVariables, OverloadedStrings, ViewPatterns, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, GADTs
   hs-source-dirs:      src
-  build-depends:       base >=4.7, transformers >=0.3, containers >=0.5, bytestring >=0.10, time >=1.4, deepseq >=1.3, network >=2.4, pipes >=4.1.2, mwc-random >=0.12, stm >=2.4, network-simple >=0.4.0.1, pipes-concurrency >=2.0.2, async >=2, pipes-network >=0.6.4, cereal >=0.4.1
+  build-depends:       base >=4.7, transformers >=0.3, containers >=0.5, bytestring >=0.10, time >=1.4, deepseq >=1.3, network >=2.4, pipes >=4.1.2, mwc-random >=0.12, stm >=2.4, network-simple >=0.4.0.1, pipes-concurrency >=2.0.2, async >=2, pipes-network >=0.6.4, cereal >=0.4.1, utf8-string >=0.3.8
 
 executable http-broker
   main-is:             HttpBroker.hs
   default-language:    Haskell2010
-  default-extensions:    RecordWildCards, ScopedTypeVariables, OverloadedStrings, ViewPatterns, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable
+  default-extensions:    RecordWildCards, ScopedTypeVariables, OverloadedStrings, ViewPatterns, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, GADTs
   hs-source-dirs:      src
-  build-depends:       base >=4.7 && <4.8, transformers >=0.3, containers >=0.5 && <0.6, bytestring >=0.10 && <0.11, time >=1.4 && <1.5, deepseq >=1.3 && <1.4, network >=2.4, pipes >=4.1.2, mwc-random >=0.12, stm >=2.4, network-simple >=0.4.0.1, pipes-concurrency >=2.0.2, async >=2, pipes-network >=0.6.4, cereal >=0.4.1, text >=1.1, aeson >=0.7, scotty >=0.9, wai >=3.0.2, errors >=1.4.7
+  build-depends:       base >=4.7 && <4.8, transformers >=0.3, containers >=0.5 && <0.6, bytestring >=0.10 && <0.11, time >=1.4 && <1.5, deepseq >=1.3 && <1.4, network >=2.4, pipes >=4.1.2, mwc-random >=0.12, stm >=2.4, network-simple >=0.4.0.1, pipes-concurrency >=2.0.2, async >=2, pipes-network >=0.6.4, cereal >=0.4.1, text >=1.1, aeson >=0.7, scotty >=0.9, wai >=3.0.2, errors >=1.4.7, utf8-string >=0.3.8
 

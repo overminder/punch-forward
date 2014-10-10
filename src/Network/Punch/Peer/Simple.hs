@@ -5,18 +5,24 @@ module Network.Punch.Peer.Simple (
 ) where
 
 import Control.Applicative
+import qualified Data.ByteString.UTF8 as B
 import Network.Socket
 import Network.BSD
+import Network.BSD
+
+import Network.Punch.Peer.Types
 
 data Greeting
   = HowAreYou { gConnId :: String }
   | FineThanksAndYou { gConnId :: String }
   deriving (Show, Read, Eq)
 
-encodeGreeting :: Greeting -> String
-encodeGreeting = show
+encodeGreeting :: Greeting -> B.ByteString
+encodeGreeting = B.fromString . show
 
 connIdMismatch connId g = gConnId g /= connId
+
+kRecvSize = 512
 
 punch
   :: String
@@ -25,22 +31,23 @@ punch
   -- ^ The local port to bind to
   -> (String, Int)
   -- ^ The remote server address
-  -> IO (SockAddr, Socket)
+  -> IO (Peer Raw)
 punch connId localPort (remoteHostName, remotePort) = do
   s <- socket AF_INET Datagram defaultProtocol
-  --localhost <- hostAddress <$> getHostByName "192.168.2.3"
-  -- ^ Better use INADDR_ANY
   bindSocket s (SockAddrInet (fromIntegral localPort) iNADDR_ANY)
   (remoteHost:_) <- hostAddresses <$> getHostByName remoteHostName
   let remoteAddr = SockAddrInet (fromIntegral remotePort) remoteHost
 
+  let peer = RawPeer s remoteAddr kRecvSize
+
   -- Handshake: first message
-  sendTo s (encodeGreeting $ HowAreYou connId) remoteAddr
+  sendPeer peer (encodeGreeting $ HowAreYou connId)
 
   let
     readReply = do
-      (read -> reply, _, who) <- recvFrom s 512
-      putStrLn $ "punch.recv: Got " ++ show reply ++ " from " ++ show who
+      (read . B.toString -> reply) <- recvPeer peer
+      putStrLn $ "punch.recv: Got " ++ show reply ++
+                 " from " ++ show remoteAddr
       if connIdMismatch connId reply
         then do
           putStrLn "punch.recv: connId mismatch, reply"
@@ -48,9 +55,10 @@ punch connId localPort (remoteHostName, remotePort) = do
         else case reply of
           HowAreYou connId' -> do
             putStrLn "punch.recv: sending FineThanksAndYou"
-            sendTo s (encodeGreeting $ FineThanksAndYou connId) remoteAddr
+            sendPeer peer (encodeGreeting $ FineThanksAndYou connId)
             return ()
           FineThanksAndYou connId' ->
             putStrLn "punch.recv: handshake finished"
   readReply
-  return (remoteAddr, s)
+  return peer
+
