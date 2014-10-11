@@ -1,4 +1,5 @@
 import Control.Monad (forever, void)
+import Control.Exception (try, SomeException)
 import Network.Socket (withSocketsDo)
 import Control.Concurrent.Async (async)
 import Control.Concurrent.MVar
@@ -40,18 +41,21 @@ main = withSocketsDo $ do
   run rcbOpt peerId broker ("serve", onRcb) = do
     bind broker
     forever $ do
-      sockAddr <- accept broker
-      putStrLn "[main] before punchSock"
-      mbRawPeer <- timeout punchTimeout $ SP.punchSock peerId sockAddr
-      case mbRawPeer of
-        Nothing -> do
-          putStrLn "[main] punchSock timeout"
-        Just rawPeer -> do
-          putStrLn "[main] punchSock ok"
-          void $ async $ do
-            putStrLn "[main] fwdloop starting..."
-            onRcb =<< newRcbFromPeer rcbOpt rawPeer
-            putStrLn "[main] fwdloop done..."
+      eiSockAddr <- try (accept broker)
+      case eiSockAddr of
+        Left (e :: SomeException) -> putStrLn $ "[main.accept] " ++ show e
+        Right sockAddr -> do
+          putStrLn "[main] before punchSock"
+          mbRawPeer <- timeout punchTimeout $ SP.punchSock peerId sockAddr
+          case mbRawPeer of
+            Nothing ->
+              putStrLn "[main] punchSock timeout"
+            Just rawPeer -> do
+              putStrLn "[main] punchSock ok"
+              void $ async $ do
+                putStrLn "[main] fwdloop starting..."
+                onRcb =<< newRcbFromPeer rcbOpt rawPeer
+                putStrLn "[main] fwdloop done..."
 
   run rcbOpt peerId broker ("connect", onRcb) = do
     mbSock <- connect broker
