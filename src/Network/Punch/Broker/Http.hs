@@ -16,6 +16,11 @@ import Network.HTTP (simpleHTTP, getRequest, getResponseBody)
 import Network.Punch.Broker.Http.Types
 import Network.Punch.Util (resolveHost)
 
+newtype Origin = Origin String
+
+instance A.FromJSON Origin where
+  parseJSON (A.Object v) = Origin <$> v A..: "origin"
+
 data Broker = Broker
   { brEndpoint :: String
   -- ^ Without trailing slash
@@ -27,8 +32,9 @@ newBroker :: String -> String -> IO Broker
 newBroker endpoint vAddr = Broker endpoint vAddr <$> getIp
  where
   getIp = do
-    rsp <- simpleHTTP (getRequest "http://httpbin.org/ip")
-    resolveHost . Just =<< getResponseBody rsp
+    Origin hostName <- getResponseJson "http://httpbin.org/ip"
+    putStrLn $ "[newBroker.getIp] " ++ hostName
+    resolveHost (Just hostName)
 
 bind :: Broker -> IO ()
 bind (Broker {..}) = do
