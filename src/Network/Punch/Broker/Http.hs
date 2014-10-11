@@ -59,7 +59,9 @@ accept (Broker {..}) = do
   go uri s myPortInt
  where
   go uri s myPortInt = do
+    putStrLn $ "[Http.accept] started"
     msg <- requestPostJson uri (brOurHost, myPortInt)
+    putStrLn $ "[Http.accept] got " ++ show msg
     case msg of
       MsgOkAddr ipv4 -> return (s, fromIpv4 ipv4)
       MsgError Timeout -> go uri s myPortInt
@@ -71,7 +73,9 @@ connect (Broker {..}) = do
   let
     myPortInt = fromIntegral myPort :: Int
     uri = brEndpoint ++ "/connect/" ++ brOurVAddr
+  putStrLn $ "[Http.connect] started"
   msg <- requestPostJson uri (brOurHost, myPortInt)
+  putStrLn $ "[Http.connect] got " ++ show msg
   case msg of
     MsgOkAddr ipv4 -> return $ Just (s, fromIpv4 ipv4)
     MsgError NoAcceptor -> return Nothing
