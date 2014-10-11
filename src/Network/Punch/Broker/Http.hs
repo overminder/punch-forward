@@ -7,6 +7,7 @@ module Network.Punch.Broker.Http
   ) where
 
 import Control.Applicative ((<$>))
+import Control.Exception (throwIO)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy.UTF8 as BLU8
 import Network.Socket hiding (bind, accept, connect)
@@ -74,8 +75,10 @@ connect (Broker {..}) = do
 --
 getResponseJson uri = do
   rsp <- simpleHTTP (getRequest uri)
-  Just a <- A.decode . BLU8.fromString <$> getResponseBody rsp
-  return a
+  mbA <- A.decode . BLU8.fromString <$> getResponseBody rsp
+  case mbA of
+    Just a -> return a
+    Nothing -> throwIO (userError $ "getResponseJson " ++ uri ++ ": no parse.")
 
 mkBoundUdpSock = do
   s <- socket AF_INET Datagram defaultProtocol

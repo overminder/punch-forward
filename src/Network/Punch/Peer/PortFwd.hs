@@ -53,16 +53,20 @@ serveLocalRequest :: Peer p => Int -> p -> IO ()
 serveLocalRequest port p = do
   addr <- sockAddrFor Nothing port
   serveOnce addr $ \ (s, who) -> do
-    putStrLn $ "someone from local connected: " ++ show who
-    async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
-    runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
+    putStrLn $ "[serveLocal] connected: " ++ show who
+    t1 <- async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
+    t2 <- async $ runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
+    mapM_ waitCatch [t1, t2]
+    putStrLn $ "[serveLocal] done: " ++ show who
+    return ()
 
 connectToDest :: Peer p => Int -> p -> IO ()
 connectToDest port p = do
   addr <- sockAddrFor (Just "127.0.0.1") port
   connect addr $ \ s -> do
-    async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
-    runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
+    t1 <- async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
+    t2 <- async $ runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
+    mapM_ waitCatch [t1, t2]
 
 logWith tag = forever $ await >>= yield
 
