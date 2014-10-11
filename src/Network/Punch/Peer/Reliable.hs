@@ -50,6 +50,8 @@ newRcb opt = do
   tResend <- async $ runResend rcbRef
   tRecv <- async $ runRecv rcbRef
   tSend <- async $ runSend rcbRef
+  tKeepAlive <- async $ runKeepAlive rcbRef
+  -- ^ This will kill itself when the connection is closed
   
   putMVar rcbRef $ Rcb
     { rcbConnOpt = opt
@@ -289,6 +291,15 @@ runRecv rcbRef = do
       liftIO $ putStrLn $ "RST on " ++ show rcbState
       rcb' <- liftIO $ internalResetEverything rcb
       left (rcb', reason)
+
+runKeepAlive rcbRef = go
+ where 
+  go = do
+    threadDelay (1000000)
+    ok <- sendRcb rcbRef B.empty
+    if ok
+      then go
+      else return ()
 
 internalResetEverything rcb@(Rcb {..}) = do
   -- We send an RST as well
