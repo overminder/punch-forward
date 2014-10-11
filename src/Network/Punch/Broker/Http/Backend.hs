@@ -2,6 +2,7 @@ module Network.Punch.Broker.Http.Backend
   ( Broker
   , newBroker
   , bindListen
+  , listListeners
   , accept
   , connect
   ) where
@@ -38,6 +39,11 @@ newBroker = do
   broker <- Broker <$> newMVar M.empty
   startReaper broker
   return broker
+
+listListeners :: Broker -> IO [(VAddr, UTCTime)]
+listListeners (Broker {..}) = map ext . M.assocs <$> readMVar brListeners
+ where
+  ext (k, v) = (k, lsExpiry v)
 
 bindListen
   :: Broker

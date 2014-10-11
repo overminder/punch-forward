@@ -3,10 +3,10 @@
 module Network.Punch.Peer.Reliable (
   module Network.Punch.Peer.Reliable.Types,
   newRcb,
+  newRcbFromPeer,
   gracefullyShutdownRcb,
   sendRcb,
   recvRcb,
-  transportsForRcb,
   
   sendMailbox,
   recvMailbox,
@@ -68,6 +68,15 @@ newRcb opt = do
     , rcbRecvThread = tRecv
     , rcbSendThread = tSend
     }
+  return rcbRef
+
+newRcbFromPeer :: Peer p => ConnOption -> p -> IO RcbRef
+newRcbFromPeer rcbOpt peer = do
+  rcbRef <- newRcb rcbOpt
+  rcb <- readMVar rcbRef
+  let (bsFromRcb, bsToRcb) = transportsForRcb rcbRef
+  async $ runEffect $ fromPeer peer >-> bsToRcb
+  async $ runEffect $ bsFromRcb >-> toPeer peer
   return rcbRef
 
 gracefullyShutdownRcb :: RcbRef -> IO ()

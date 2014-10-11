@@ -1,3 +1,4 @@
+import Control.Monad (forever)
 import Network.Socket (withSocketsDo)
 import Control.Concurrent.Async (async)
 import Control.Concurrent.MVar
@@ -10,16 +11,43 @@ import Network.Punch.Peer.Reliable
 import Network.Punch.Peer.PortFwd
 import Network.Punch.Peer.Types
 
-rcbFromPeer rcbOpt peer = do
-  rcbRef <- newRcb rcbOpt
-  rcb <- readMVar rcbRef
-  let (bsFromRcb, bsToRcb) = transportsForRcb rcbRef
-  async $ runEffect $ fromPeer peer >-> bsToRcb
-  async $ runEffect $ bsFromRcb >-> toPeer peer
-  return rcbRef
+import Network.Punch.Broker.Http
 
 main = withSocketsDo $ do
-  let rcbOpt = ConnOption 10000 20 480
+  let rcbOpt = ConnOption 50000 7 480
+
+  args <- getArgs
+  eiF <- case args of
+    ["--listen", port] ->
+      return $ Right ("L", (serveLocalRequest (read port)))
+    ["--connect", port] ->
+      return $ Right ("C", (connectToDest (read port)))
+    _ ->
+      return $ Left "usage: [program] [--listen port | --connect port]"
+
+  case eiF of
+    Left err -> putStrLn err
+    Right act -> do
+      broker <- newBroker "http://nol-m9.rhcloud.com" Config.peerId
+      run rcbOpt Config.peerId broker act
+ where
+  run rcbOpt peerId broker ("L", onRcb) = do
+    bind broker
+    forever $ do
+      sockAddr <- accept broker
+      rawPeer <- SP.punchSock peerId sockAddr
+      onRcb =<< newRcbFromPeer rcbOpt rawPeer
+  run rcbOpt peerId broker ("C", onRcb) = do
+    mbSock <- connect broker
+    case mbSock of
+      Nothing -> do
+        putStrLn "[main.connect] refused"
+        return ()
+      Just sockAddr -> do
+        rawPeer <- SP.punchSock peerId sockAddr
+        onRcb =<< newRcbFromPeer rcbOpt rawPeer
+
+main2 rcbOpt = do
   args <- getArgs
   f <- case args of
     ["--listen", port] ->
@@ -30,6 +58,6 @@ main = withSocketsDo $ do
       putStrLn "usage: [program] [--listen port | --connect port]"
 
   uPeer <- SP.punch Config.peerId Config.simplePort Config.simpleRemote
-  rcbRef <- rcbFromPeer rcbOpt uPeer
+  rcbRef <- newRcbFromPeer rcbOpt uPeer
   f rcbRef
 

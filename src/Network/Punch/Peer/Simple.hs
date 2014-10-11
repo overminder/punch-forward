@@ -1,7 +1,8 @@
 -- For NATs that keep the same port numbers for translated addresses.
 
 module Network.Punch.Peer.Simple (
-  punch
+  punch,
+  punchSock
 ) where
 
 import Control.Applicative
@@ -37,9 +38,10 @@ punch connId localPort (remoteHostName, remotePort) = do
   s <- socket AF_INET Datagram defaultProtocol
   bindSocket s =<< sockAddrFor Nothing localPort
   remoteAddr <- sockAddrFor (Just remoteHostName) remotePort
+  punchSock connId (s, remoteAddr)
 
+punchSock connId (s, remoteAddr) = do
   let peer = RawPeer s remoteAddr kRecvSize
-
   -- Handshake: first message
   sendPeer peer (encodeGreeting $ HowAreYou connId)
 
@@ -61,4 +63,3 @@ punch connId localPort (remoteHostName, remotePort) = do
             putStrLn "punch.recv: handshake finished"
   readReply
   return peer
-

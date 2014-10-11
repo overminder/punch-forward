@@ -15,6 +15,13 @@ data ErrorCode
   deriving (Show, Read)
 
 data Ipv4Addr = Ipv4Addr HostAddress PortNumber
+  deriving (Show)
+
+data Msg
+  = MsgError ErrorCode
+  | MsgOk
+  | MsgOkAddr Ipv4Addr
+  deriving (Show)
 
 fromIpv4 :: Ipv4Addr -> SockAddr
 fromIpv4 (Ipv4Addr host port) = SockAddrInet port host
@@ -35,11 +42,6 @@ instance FromJSON Ipv4Addr where
    where
     fromInt :: Int -> PortNumber
     fromInt = fromIntegral
-
-data Msg
-  = MsgError ErrorCode
-  | MsgOk
-  | MsgOkAddr Ipv4Addr
 
 instance ToJSON ErrorCode where
   toJSON e = object $ ["code" .= errorCode] <> extra

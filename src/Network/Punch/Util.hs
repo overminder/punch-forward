@@ -29,14 +29,16 @@ cutBsTo n = forever $ do
 cutBs :: Int -> B.ByteString -> [B.ByteString]
 cutBs n bs = runIdentity $ P.toListM $ yield bs >-> cutBsTo n
 
-sockAddrFor :: Maybe String -> Int -> IO SockAddr
-sockAddrFor mbHostName port = do
-  host <- maybe (return iNADDR_ANY) getHost mbHostName
-  return (SockAddrInet (fromIntegral port) host)
+resolveHost :: Maybe String -> IO HostAddress
+resolveHost = maybe (return iNADDR_ANY) getHost
  where
   getHost hostName = do
     (host:_) <- hostAddresses <$> getHostByName hostName
     return host
+
+sockAddrFor :: Maybe String -> Int -> IO SockAddr
+sockAddrFor mbHostName port =
+  SockAddrInet (fromIntegral port) <$> resolveHost mbHostName
 
 pipeWith printIt = forever $ do
   wat <- await

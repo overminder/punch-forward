@@ -51,7 +51,7 @@ connect addr f = bracket doConn NS.sClose f
 
 serveLocalRequest :: Peer p => Int -> p -> IO ()
 serveLocalRequest port p = do
-  addr <- sockAddrFor (Just "127.0.0.1") port
+  addr <- sockAddrFor Nothing port
   serveOnce addr $ \ (s, who) -> do
     putStrLn $ "someone from local connected: " ++ show who
     async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
