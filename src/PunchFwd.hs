@@ -38,8 +38,14 @@ main = withSocketsDo $ do
     bind broker
     forever $ do
       sockAddr <- accept broker
+      putStrLn "[main] before punchSock"
       rawPeer <- SP.punchSock peerId sockAddr
-      void . async $ onRcb =<< newRcbFromPeer rcbOpt rawPeer
+      putStrLn "[main] after punchSock"
+      void $ async $ do
+        putStrLn "[main] fwdloop starting..."
+        onRcb =<< newRcbFromPeer rcbOpt rawPeer
+        putStrLn "[main] fwdloop done..."
+
   run rcbOpt peerId broker ("connect", onRcb) = do
     mbSock <- connect broker
     case mbSock of
@@ -47,8 +53,11 @@ main = withSocketsDo $ do
         putStrLn "[main.connect] refused"
         return ()
       Just sockAddr -> do
+        putStrLn "[main] before punchSock"
         rawPeer <- SP.punchSock peerId sockAddr
+        putStrLn "[main] after punchSock"
         onRcb =<< newRcbFromPeer rcbOpt rawPeer
+        putStrLn "[main] finished one rcb"
 
 main2 rcbOpt = do
   args <- getArgs
