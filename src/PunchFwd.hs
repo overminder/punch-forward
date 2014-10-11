@@ -18,26 +18,29 @@ main = withSocketsDo $ do
 
   args <- getArgs
   eiF <- case args of
-    ["--listen", port] ->
-      return $ Right ("L", (void . async . serveLocalRequest (read port)))
-    ["--connect", port] ->
-      return $ Right ("C", (connectToDest (read port)))
+    [punchAction, fwdAction, port]
+      | fwdAction == "L" ->
+        -- "ssh -L port:localhost:$rPort"
+        return $ Right (punchAction, (serveLocalRequest (read port)))
+      | fwdAction == "R" ->
+        -- "ssh -R $lPort:localhost:port"
+        return $ Right (punchAction, (connectToDest (read port)))
     _ ->
-      return $ Left "usage: [program] [--listen port | --connect port]"
+      return $ Left "usage: [program] [serve|connect] [L|C] port"
 
   case eiF of
     Left err -> putStrLn err
     Right act -> do
-      broker <- newBroker "http://nol-m9.rhcloud.com" Config.peerId
+      broker <- newBroker Config.httpBroker Config.peerId
       run rcbOpt Config.peerId broker act
  where
-  run rcbOpt peerId broker ("L", onRcb) = do
+  run rcbOpt peerId broker ("serve", onRcb) = do
     bind broker
     forever $ do
       sockAddr <- accept broker
       rawPeer <- SP.punchSock peerId sockAddr
-      onRcb =<< newRcbFromPeer rcbOpt rawPeer
-  run rcbOpt peerId broker ("C", onRcb) = do
+      void . async $ onRcb =<< newRcbFromPeer rcbOpt rawPeer
+  run rcbOpt peerId broker ("connect", onRcb) = do
     mbSock <- connect broker
     case mbSock of
       Nothing -> do

@@ -11,6 +11,7 @@ data ErrorCode
   | Timeout
   | NoAcceptor
   | AlreadyAccepting
+  | WrongMethod
   | Other String
   deriving (Show, Read)
 
@@ -53,6 +54,7 @@ instance ToJSON ErrorCode where
       Timeout -> "Timeout"
       NoAcceptor -> "NoAcceptor"
       AlreadyAccepting -> "AlreadyAccepting"
+      WrongMethod -> "WrongMethod"
       Other _ -> "Other"
 
     extra = case e of
@@ -68,7 +70,10 @@ instance FromJSON ErrorCode where
       "Timeout" -> return Timeout
       "NoAcceptor" -> return NoAcceptor
       "AlreadyAccepting" -> return AlreadyAccepting
+      "WrongMethod" -> return WrongMethod
       "Other" -> Other <$> v .: "extra"
+      wat -> return $ Other wat
+  parseJSON _ = fail "No parse"
 
 instance ToJSON Msg where
   toJSON (MsgError reason) =
