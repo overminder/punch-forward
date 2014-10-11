@@ -21,21 +21,21 @@ main = withSocketsDo $ do
 
   args <- getArgs
   eiF <- case args of
-    [punchAction, fwdAction, port]
+    [punchAction, peerId, fwdAction, port]
       | fwdAction == "L" ->
         -- "ssh -L port:localhost:$rPort"
-        return $ Right (punchAction, (serveLocalRequest (read port)))
+        return $ Right (peerId, punchAction, (serveLocalRequest (read port)))
       | fwdAction == "R" ->
         -- "ssh -R $lPort:localhost:port"
-        return $ Right (punchAction, (connectToDest (read port)))
+        return $ Right (peerId, punchAction, (connectToDest (read port)))
     _ ->
-      return $ Left "usage: [program] [serve|connect] [L|C] port"
+      return $ Left "usage: [program] [serve|connect] peerId [L|C] port"
 
   case eiF of
     Left err -> putStrLn err
-    Right act -> do
-      broker <- newBroker Config.httpBroker Config.peerId
-      run rcbOpt Config.peerId broker act
+    Right (peerId, punchAct, onRcb) -> do
+      broker <- newBroker Config.httpBroker peerId
+      run rcbOpt peerId broker (punchAct, onRcb)
  where
   run rcbOpt peerId broker ("serve", onRcb) = do
     bind broker
