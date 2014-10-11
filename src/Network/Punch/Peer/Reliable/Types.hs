@@ -1,6 +1,19 @@
 module Network.Punch.Peer.Reliable.Types where
 
-import Control.Concurrent.STM (STM, atomically)
+import Control.Applicative ((<$>), (<*>))
+import Control.Concurrent.MVar
+import Control.Concurrent.Async (Async, async)
+import Control.Concurrent.STM (STM)
+import Control.DeepSeq (NFData)
+import qualified Data.ByteString as B
+import qualified Data.Serialize as S
+import Data.Time
+import Data.Bits (testBit, setBit, clearBit)
+import qualified Data.Map as M
+import Data.Data (Data)
+import Data.Typeable (Typeable)
+import qualified Pipes.Concurrent as P
+import Text.Printf (printf)
 
 -- This should of course be more low-level (like a c-struct).
 -- However it seems that the strictness annotations in this type seems to
@@ -19,6 +32,11 @@ data Packet
   -- ^ Invariant: serialized form takes <= 512 bytes.
   -- That is, payload should be <= 480 bytes.
 
+showPacket :: Packet -> String
+showPacket pkt@(Packet {..}) =
+  printf "<Packet %-5d, %-10s, %5d bytes>"
+         pktSeqNo (show pktFlags) (B.length pktPayload)
+
 -- | For the strict map
 instance NFData Packet
 
@@ -35,20 +53,13 @@ data PacketFlag
 
 data ConnOption
   = ConnOption {
-    optIsInitiator :: Bool,
-    -- ^ True for client, False for server
     optDefaultBackOff :: Int,
     -- ^ In micros
-    optMaxRetires :: Int,
-    optRandGen :: GenIO
+    optMaxRetries :: Int,
+    optMaxPayloadSize :: Int
   }
 
-data ConnectionError
-  = PeerClosed
-  | TooManyRetries
-  deriving (Show, Eq, Ord, Typeable)
-
-newtype Mailbox a = Mailbox (P.Input a, P.Output a, STM ())
+newtype Mailbox a = Mailbox (P.Output a, P.Input a, STM ())
 
 -- XXX: Shall we call some of them `control blocks` instead?
 type OutputQueue = M.Map Int Packet
@@ -56,15 +67,19 @@ type DeliveryQueue = M.Map Int B.ByteString
 type ResendQueue = M.Map (UTCTime, Int) (Int, Int)
 -- ^ (resend-time, DATA-seq) => (next-backoff-micros, n-retries)
 
-instance NFData InputEntry
-instance NFData InputQueue
-
 data RcbState
   = RcbOpen
   | RcbFinSent
   | RcbCloseWait
   | RcbClosed
   deriving (Show, Eq)
+
+data CloseReason
+  = PeerClosed
+  | TooManyRetries
+  | GracefullyShutdown
+  | AlreadyClosed
+  deriving (Show, Eq, Ord, Typeable)
 
 -- | Reliable Control Block
 data Rcb = Rcb
@@ -109,6 +124,15 @@ unfoldFlags :: (Bounded a, Enum a) => Int -> [a]
 unfoldFlags flag = concatMap check [minBound..maxBound]
  where
   check a = if hasFlag flag a then [a] else []
+
+hasFlag :: Enum a => Int -> a -> Bool
+hasFlag flag a = testBit flag (fromEnum a)
+
+setFlag :: Enum a => Int -> a -> Int
+setFlag flag a = setBit flag (fromEnum a)
+
+delFlag :: Enum a => Int -> a -> Int
+delFlag flag a = clearBit flag (fromEnum a)
 
 -- Util
 

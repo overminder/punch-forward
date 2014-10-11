@@ -11,6 +11,7 @@ import Network.BSD
 import Network.BSD
 
 import Network.Punch.Peer.Types
+import Network.Punch.Util (sockAddrFor)
 
 data Greeting
   = HowAreYou { gConnId :: String }
@@ -34,9 +35,8 @@ punch
   -> IO (Peer Raw)
 punch connId localPort (remoteHostName, remotePort) = do
   s <- socket AF_INET Datagram defaultProtocol
-  bindSocket s (SockAddrInet (fromIntegral localPort) iNADDR_ANY)
-  (remoteHost:_) <- hostAddresses <$> getHostByName remoteHostName
-  let remoteAddr = SockAddrInet (fromIntegral remotePort) remoteHost
+  bindSocket s =<< sockAddrFor Nothing localPort
+  remoteAddr <- sockAddrFor (Just remoteHostName) remotePort
 
   let peer = RawPeer s remoteAddr kRecvSize
 

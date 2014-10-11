@@ -8,7 +8,8 @@ import qualified Pipes.Concurrent as P
 import Network.Socket
 
 import Network.Punch.Broker.UDP
-import Network.Punch.Peer.Reliable
+import Network.Punch.Peer.Reliable (newRcb)
+import Network.Punch.Peer.Reliable.Types (Rcb (..))
 import Network.Punch.Peer.PortFwd
 import Network.Punch.Util
 import qualified Config

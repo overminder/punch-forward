@@ -1,0 +1,8 @@
+Recompilation command:
+        cabal exec ghc -- src/TestReliable.hs -isrc/ -XRecordWildCards -XDeriveDataTypeable -XOverloadedStrings -XScopedTypeVariables -XTupleSections -XViewPatterns -threaded -O
+
+Directory to watch:
+        "src/"
+
+File globs to watch:
+        - "*.hs"
