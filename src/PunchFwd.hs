@@ -13,6 +13,8 @@ import Network.Punch.Peer.Types
 
 import Network.Punch.Broker.Http
 
+punchTimeout = 2500000
+
 main = withSocketsDo $ do
   let rcbOpt = ConnOption 50000 7 480
 
@@ -39,12 +41,16 @@ main = withSocketsDo $ do
     forever $ do
       sockAddr <- accept broker
       putStrLn "[main] before punchSock"
-      rawPeer <- SP.punchSock peerId sockAddr
-      putStrLn "[main] after punchSock"
-      void $ async $ do
-        putStrLn "[main] fwdloop starting..."
-        onRcb =<< newRcbFromPeer rcbOpt rawPeer
-        putStrLn "[main] fwdloop done..."
+      mbRawPeer <- timeout punchTimeout $ SP.punchSock peerId sockAddr
+      case mbRawPeer of
+        Nothing -> do
+          putStrLn "[main] punchSock timeout"
+        Just rawPeer -> do
+          putStrLn "[main] punchSock ok"
+          void $ async $ do
+            putStrLn "[main] fwdloop starting..."
+            onRcb =<< newRcbFromPeer rcbOpt rawPeer
+            putStrLn "[main] fwdloop done..."
 
   run rcbOpt peerId broker ("connect", onRcb) = do
     mbSock <- connect broker
@@ -54,10 +60,14 @@ main = withSocketsDo $ do
         return ()
       Just sockAddr -> do
         putStrLn "[main] before punchSock"
-        rawPeer <- SP.punchSock peerId sockAddr
-        putStrLn "[main] after punchSock"
-        onRcb =<< newRcbFromPeer rcbOpt rawPeer
-        putStrLn "[main] finished one rcb"
+        mbRawPeer <- timeout punchTimeout $ SP.punchSock peerId sockAddr
+        case mbRawPeer of
+          Nothing -> do
+            putStrLn "[main] punchSock timeout"
+          Just rawPeer -> do
+            putStrLn "[main] punchSock ok"
+            onRcb =<< newRcbFromPeer rcbOpt rawPeer
+            putStrLn "[main] finished one rcb"
 
 main2 rcbOpt = do
   args <- getArgs
