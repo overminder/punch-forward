@@ -3,6 +3,7 @@ import Network.Socket (withSocketsDo)
 import Control.Concurrent.Async (async)
 import Control.Concurrent.MVar
 import System.Environment
+import System.Timeout
 import Pipes (runEffect, (>->))
 
 import qualified Config
