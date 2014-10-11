@@ -1,4 +1,4 @@
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import Network.Socket (withSocketsDo)
 import Control.Concurrent.Async (async)
 import Control.Concurrent.MVar
@@ -19,7 +19,7 @@ main = withSocketsDo $ do
   args <- getArgs
   eiF <- case args of
     ["--listen", port] ->
-      return $ Right ("L", (serveLocalRequest (read port)))
+      return $ Right ("L", (void . async . serveLocalRequest (read port)))
     ["--connect", port] ->
       return $ Right ("C", (connectToDest (read port)))
     _ ->
