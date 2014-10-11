@@ -43,3 +43,4 @@ pipeWith printIt = forever $ do
   liftIO $ printIt wat
   yield wat
 
+mapPipe f = forever (yield . f =<< await)

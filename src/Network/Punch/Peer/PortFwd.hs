@@ -1,6 +1,6 @@
 module Network.Punch.Peer.PortFwd (
-  simpleL2RForwardOnLocal,
-  simpleR2LForwardOnRemote
+  serveLocalRequest,
+  connectToDest
 ) where
 
 import Control.Exception (bracket)
@@ -15,6 +15,7 @@ import Network.BSD
 import qualified Network.Socket.ByteString as NSB
 
 import Network.Punch.Util (sockAddrFor)
+import Network.Punch.Peer.Types
 
 -- Simple L->R forward
 
@@ -28,54 +29,40 @@ fromSocket s size = go
       else yield bs >> go
 
 toSocket :: Socket -> Consumer B.ByteString IO ()
-toSocket sock = forever (NSB.sendAll sock =<< await)
+toSocket sock = forever (liftIO . NSB.sendAll sock =<< await)
 
 serveOnce :: SockAddr -> ((Socket, SockAddr) -> IO a) -> IO a
-serveOnce addr f = bracket accept (sClose . fst) f
+serveOnce addr f = bracket accept (NS.sClose . fst) f
  where
   accept = bracket listenOnce NS.sClose NS.accept
   listenOnce = do
-    s <- NS.socket AF_INET Stream defaultProtocol
+    s <- NS.socket NS.AF_INET NS.Stream NS.defaultProtocol
     NS.bind s addr
     NS.listen s 1
     return s
 
 connect :: SockAddr -> (Socket -> IO a) -> IO a
-connect addr f = bracket doConn sClose f
+connect addr f = bracket doConn NS.sClose f
  where 
   doConn = do
-    s <- NS.socket AF_INET Stream defaultProtocol
+    s <- NS.socket NS.AF_INET NS.Stream NS.defaultProtocol
     NS.connect s addr
     return s
 
-mkSockAddr :: String -> Int -> IO SockAddr
-mkSockAddr host port = do
-  x
-
-simpleL2RForwardOnLocal
-  :: Int
-  -- ^ Local port
-  -> (Producer B.ByteString IO (),
-      Consumer B.ByteString IO ())
-  -> IO ()
-simpleL2RForwardOnLocal port (bsIn, bsOut) = do
+serveLocalRequest :: Peer p => Int -> p -> IO ()
+serveLocalRequest port p = do
   addr <- sockAddrFor (Just "127.0.0.1") port
   serveOnce addr $ \ (s, who) -> do
     putStrLn $ "someone from local connected: " ++ show who
-    async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> bsOut
-    runEffect $ bsIn >-> logWith "toSock " >-> toSocket s
+    async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
+    runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
 
-simpleL2RForwardOnRemote
-  :: Int
-  -- ^ Remote port
-  -> (Producer B.ByteString IO (),
-      Consumer B.ByteString IO ())
-  -> IO ()
-simpleL2RForwardOnRemote port (bsIn, bsOut) = do
+connectToDest :: Peer p => Int -> p -> IO ()
+connectToDest port p = do
   addr <- sockAddrFor (Just "127.0.0.1") port
   connect addr $ \ s -> do
-    async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> bsOut
-    runEffect $ bsIn >-> logWith "toSock " >-> toSocket s
+    async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
+    runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
 
 logWith tag = forever $ await >>= yield
 

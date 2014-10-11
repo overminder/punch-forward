@@ -21,7 +21,6 @@ run = do
     startClient (serverHost, serverPort) Listen Config.peerId
 
 runWithAddrSock (addr, sock) = do
-  pipe <- mkPacketPipe addr 512 sock
   putStrLn "Server"
   (bsIn, rawBsOut) <- establish pipe "Server"
   let bsOut = cutBsTo 300 >-> P.toOutput rawBsOut

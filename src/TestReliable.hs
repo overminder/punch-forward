@@ -7,9 +7,10 @@ import Control.Concurrent hiding (yield)
 import System.Random.MWC
 import Control.Monad
 import qualified Data.ByteString as B
-import qualified Data.ByteString.UTF8 as B
-
+import qualified Data.ByteString.UTF8 as BU8
 import System.Environment
+import Text.Printf
+
 import Network.Punch.Peer.Reliable
 import Network.Punch.Util
 
@@ -104,22 +105,33 @@ recvAllRcb rcbRef = go []
       Nothing -> return $ reverse out
       Just bs -> go (bs:out)
 
+sendTimesRcb payload n rcbRef = replicateM n (sendRcb rcbRef payload)
+
+recvAllTimesRcb rcbRef = go 0
+ where
+  go n = do
+    got <- recvRcb rcbRef
+    case got of
+      Nothing -> return n
+      Just _ -> go (n + 1)
+
 main = do
-  [read -> maxDup, read -> maxDelay, read -> dropRate, read -> dataLen]
+  [read -> maxDup, read -> maxDelay, read -> dropRate, read -> dataCount]
     <- getArgs
-  let connOpt = ConnOption 50000 20 480
+  let connOpt = ConnOption 10000 20 480
   localRcbRef <- newRcb connOpt
   remoteRcbRef <- newRcb connOpt
   uOpt <- mkUOption maxDup maxDelay dropRate
   startUTransport uOpt localRcbRef remoteRcbRef
   --startEcho remoteRcbRef
-  let manyInts = [1..dataLen] :: [Int]
-  True <- sendRcb localRcbRef (B.fromString $ show manyInts)
+  let
+    nTimes = dataCount
+    payload = B.replicate 480 0
+    nKbs = fromIntegral (B.length payload * nTimes) / 1024 :: Double
+  replicateM nTimes (sendRcb localRcbRef payload)
   gracefullyShutdownRcb localRcbRef
-  putStrLn "send ok"
-  got <- recvAllRcb remoteRcbRef
-  let restored = read (B.toString $ B.concat got) :: [Int]
-  print (length restored)
+  printf "Send %f KB ok\n" nKbs
+  nTimes <- recvAllTimesRcb remoteRcbRef
   --threadDelay 5000000
   return ()
 

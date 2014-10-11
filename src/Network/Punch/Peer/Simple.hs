@@ -32,7 +32,7 @@ punch
   -- ^ The local port to bind to
   -> (String, Int)
   -- ^ The remote server address
-  -> IO (Peer Raw)
+  -> IO RawPeer
 punch connId localPort (remoteHostName, remotePort) = do
   s <- socket AF_INET Datagram defaultProtocol
   bindSocket s =<< sockAddrFor Nothing localPort
@@ -45,7 +45,7 @@ punch connId localPort (remoteHostName, remotePort) = do
 
   let
     readReply = do
-      (read . B.toString -> reply) <- recvPeer peer
+      Just (read . B.toString -> reply) <- recvPeer peer
       putStrLn $ "punch.recv: Got " ++ show reply ++
                  " from " ++ show remoteAddr
       if connIdMismatch connId reply

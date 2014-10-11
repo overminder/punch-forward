@@ -6,6 +6,7 @@ module Network.Punch.Peer.Reliable (
   gracefullyShutdownRcb,
   sendRcb,
   recvRcb,
+  transportsForRcb,
   
   sendMailbox,
   recvMailbox,
@@ -25,13 +26,20 @@ import Control.Concurrent.STM (STM, atomically)
 import Data.Time
 import qualified Data.List as L
 import qualified Data.Map as M
-import Pipes (each, runEffect, (>->))
+import qualified Data.Serialize as S
+import Pipes (each, runEffect, (>->), Consumer, Producer)
 import qualified Pipes.Concurrent as P
 import qualified Data.ByteString as B
 import Text.Printf (printf)
 
+import Network.Punch.Peer.Types
 import Network.Punch.Peer.Reliable.Types
-import Network.Punch.Util (cutBs)
+import Network.Punch.Util (cutBs, mapPipe)
+
+instance Peer RcbRef where
+  sendPeer = sendRcb
+  recvPeer = recvRcb
+  closePeer = gracefullyShutdownRcb
 
 newRcb :: ConnOption -> IO RcbRef
 newRcb opt = do
@@ -80,6 +88,21 @@ sendRcb rcbRef bs = modifyMVar rcbRef $ \ rcb@(Rcb {..}) -> do
 
 recvRcb :: RcbRef -> IO (Maybe B.ByteString)
 recvRcb rcbRef = recvMailbox . rcbToApp =<< readMVar rcbRef
+
+transportsForRcb
+  :: RcbRef
+  -> (Producer B.ByteString IO (), Consumer B.ByteString IO ())
+transportsForRcb rcbRef = (producer, consumer)
+ where
+  producer = do
+    Mailbox (_, toNic, _) <- liftIO (rcbToNic <$> readMVar rcbRef)
+    P.fromInput toNic >-> mapPipe (S.runPut . putPacket)
+
+  consumer = do
+    Mailbox (fromNic, _, _) <- liftIO (rcbFromNic <$> readMVar rcbRef)
+    mapPipe (either reportPktErr id . S.runGet getPacket) >-> P.toOutput fromNic
+  
+  reportPktErr e = error $ "[rcb.transport] Parse error: " ++ show e
 
 ----
 
