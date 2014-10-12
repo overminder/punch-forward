@@ -49,10 +49,11 @@ connect addr f = bracket doConn NS.sClose f
     NS.connect s addr
     return s
 
-serveLocalRequest :: Peer p => Int -> p -> IO ()
-serveLocalRequest port p = do
+serveLocalRequest :: Peer p => Int -> IO p -> IO ()
+serveLocalRequest port mkP = do
   addr <- sockAddrFor Nothing port
   serveOnce addr $ \ (s, who) -> do
+    p <- mkP
     putStrLn $ "[serveLocal] connected: " ++ show who
     t1 <- async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
     t2 <- async $ runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
@@ -60,10 +61,11 @@ serveLocalRequest port p = do
     closePeer p
     putStrLn $ "[serveLocal] done: " ++ show who
 
-connectToDest :: Peer p => Int -> p -> IO ()
-connectToDest port p = do
+connectToDest :: Peer p => Int -> IO p -> IO ()
+connectToDest port mkP = do
   addr <- sockAddrFor (Just "127.0.0.1") port
   connect addr $ \ s -> do
+    p <- mkP
     t1 <- async $ runEffect $ fromSocket s 4096 >-> logWith "fromSock " >-> toPeer p
     t2 <- async $ runEffect $ fromPeer p >-> logWith "toSock " >-> toSocket s
     waitAnyCatch [t1, t2]

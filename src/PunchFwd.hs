@@ -54,7 +54,7 @@ main = withSocketsDo $ do
               putStrLn "[main] punchSock ok"
               void $ async $ do
                 putStrLn "[main] fwdloop starting..."
-                onRcb =<< newRcbFromPeer rcbOpt rawPeer
+                onRcb (newRcbFromPeer rcbOpt rawPeer)
                 putStrLn "[main] fwdloop done..."
 
   run rcbOpt peerId broker ("connect", onRcb) = do
@@ -71,20 +71,6 @@ main = withSocketsDo $ do
             putStrLn "[main] punchSock timeout"
           Just rawPeer -> do
             putStrLn "[main] punchSock ok"
-            onRcb =<< newRcbFromPeer rcbOpt rawPeer
+            onRcb (newRcbFromPeer rcbOpt rawPeer)
             putStrLn "[main] finished one rcb"
-
-main2 rcbOpt = do
-  args <- getArgs
-  f <- case args of
-    ["--listen", port] ->
-      return $ serveLocalRequest (read port)
-    ["--connect", port] ->
-      return $ connectToDest (read port)
-    _ -> return $ \ _ ->
-      putStrLn "usage: [program] [--listen port | --connect port]"
-
-  uPeer <- SP.punch Config.peerId Config.simplePort Config.simpleRemote
-  rcbRef <- newRcbFromPeer rcbOpt uPeer
-  f rcbRef
 
