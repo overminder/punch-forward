@@ -111,6 +111,7 @@ requestPostJson uri body = do
 mkBoundUdpSock = do
   s <- socket AF_INET Datagram defaultProtocol
   NS.bind s (SockAddrInet aNY_PORT iNADDR_ANY)
+  setSocketOption s ReuseAddr 1
   SockAddrInet port _ <- getSocketName s
   return (s, port)
 

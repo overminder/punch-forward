@@ -9,6 +9,7 @@ import Control.Monad
 import Control.Concurrent.Async
 import Pipes
 import qualified Pipes.Concurrent as P
+import Network.Socket hiding (connect, accept)
 import qualified Network.Socket as NS
 import Network.Socket (Socket, SockAddr (..))
 import Network.BSD
@@ -32,22 +33,28 @@ toSocket :: Socket -> Consumer B.ByteString IO ()
 toSocket sock = forever (liftIO . NSB.sendAll sock =<< await)
 
 serveOnce :: SockAddr -> ((Socket, SockAddr) -> IO a) -> IO a
-serveOnce addr f = bracket accept (NS.sClose . fst) f
+serveOnce addr f = bracket accept (sClose . fst) f
  where
-  accept = bracket listenOnce NS.sClose NS.accept
+  accept = bracket listenOnce sClose NS.accept
   listenOnce = do
-    s <- NS.socket NS.AF_INET NS.Stream NS.defaultProtocol
-    NS.bind s addr
-    NS.listen s 1
+    s <- mkTcpSock
+    bind s addr
+    listen s 1
     return s
 
 connect :: SockAddr -> (Socket -> IO a) -> IO a
-connect addr f = bracket doConn NS.sClose f
+connect addr f = bracket doConn sClose f
  where 
   doConn = do
-    s <- NS.socket NS.AF_INET NS.Stream NS.defaultProtocol
+    s <- mkTcpSock
     NS.connect s addr
     return s
+
+mkTcpSock :: IO Socket
+mkTcpSock = do
+  s <- socket AF_INET Stream defaultProtocol
+  setSocketOption s ReuseAddr 1
+  return s
 
 serveLocalRequest :: Peer p => Int -> IO p -> IO ()
 serveLocalRequest port mkP = do
