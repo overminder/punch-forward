@@ -1,9 +1,15 @@
-module Network.Punch.Peer.Types where
+module Network.Punch.Peer.Types
+  ( Peer (..)
+  , RawPeer
+  , mkRawPeer
+  , fromPeer
+  , toPeer
+  ) where
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as B
-import Network.Socket (Socket, SockAddr)
+import Network.Socket (Socket, SockAddr, sClose)
 import qualified Network.Socket.ByteString as B
 import qualified Pipes.Concurrent as P
 import Data.Typeable (Typeable)
@@ -34,10 +40,15 @@ toPeer p = go
     ok <- liftIO $ sendPeer p bs
     when ok go
 
-instance Peer RawPeer where
-  sendPeer (RawPeer {..}) bs = B.sendAllTo rawSock bs rawAddr >> return True
+-- In case in the future we need to add IO-related refs.
+mkRawPeer :: Socket -> SockAddr -> Int -> IO RawPeer
+mkRawPeer sock addr size = return $ RawPeer sock addr size
 
-  recvPeer p@(RawPeer {..}) = go
+instance Peer RawPeer where
+  sendPeer (RawPeer {..}) bs = do
+    B.sendAllTo rawSock bs rawAddr >> return True
+
+  recvPeer RawPeer {..} = go
    where
     go = do
       (bs, fromAddr) <- B.recvFrom rawSock rawRecvSize
@@ -46,5 +57,5 @@ instance Peer RawPeer where
         then go
         else return (Just bs)
 
-  closePeer _ = return ()
+  closePeer RawPeer {..} = sClose rawSock
 

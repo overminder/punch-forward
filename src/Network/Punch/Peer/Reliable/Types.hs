@@ -100,9 +100,8 @@ data Rcb = Rcb
   , rcbFinSeq :: Int
   -- ^ Only available when entering the CloseWait state.
   -- This is the last DATA seq that we are going to receive.
-  , rcbResendThread :: Async ()
-  , rcbRecvThread :: Async ()
-  , rcbSendThread :: Async ()
+  , rcbExtraFinalizers :: [IO ()]
+  -- ^ In case this is connected to any other pipes
   }
 
 type RcbRef = MVar Rcb

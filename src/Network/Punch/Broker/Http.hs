@@ -51,7 +51,7 @@ bind (Broker {..}) = do
   uri = brEndpoint ++ "/bindListen/" ++ brOurVAddr
 
 accept :: Broker -> IO (Socket, SockAddr)
-accept (Broker {..}) = do
+accept broker@(Broker {..}) = do
   (s, myPort) <- mkBoundUdpSock
   let
     uri = brEndpoint ++ "/accept/" ++ brOurVAddr
@@ -65,7 +65,13 @@ accept (Broker {..}) = do
     case msg of
       MsgOkAddr ipv4 -> return (s, fromIpv4 ipv4)
       MsgError Timeout -> go uri s myPortInt
-      MsgError err -> error $ "[Http.accept.go] " ++ show err
+      MsgError NotBound -> do
+        -- Broker was restarted and lost its internal state
+        putStrLn "[Http.accept] Broker seems to have be restarted. Rebinding my address..."
+        bind broker
+        go uri s myPortInt
+      MsgError err -> do
+        error $ "[Http.accept.go] " ++ show err
 
 connect :: Broker -> IO (Maybe (Socket, SockAddr))
 connect (Broker {..}) = do

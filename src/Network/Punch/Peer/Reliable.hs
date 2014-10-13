@@ -47,11 +47,12 @@ newRcb opt = do
   [fromNic, toNic] <- replicateM 2 $ P.spawn' P.Unbounded
   fromApp <- P.spawn' P.Unbounded
   toApp <- P.spawn' P.Unbounded
+
   tResend <- async $ runResend rcbRef
   tRecv <- async $ runRecv rcbRef
   tSend <- async $ runSend rcbRef
   tKeepAlive <- async $ runKeepAlive rcbRef
-  -- ^ This will kill itself when the connection is closed
+  -- ^ Those will kill themselves when the connection is closed
   
   putMVar rcbRef $ Rcb
     { rcbConnOpt = opt
@@ -66,19 +67,18 @@ newRcb opt = do
     , rcbLastDeliverySeq = 0
     , rcbResendQ = M.empty
     , rcbFinSeq = (-1)
-    , rcbResendThread = tResend
-    , rcbRecvThread = tRecv
-    , rcbSendThread = tSend
+    , rcbExtraFinalizers = []
     }
   return rcbRef
 
 newRcbFromPeer :: Peer p => ConnOption -> p -> IO RcbRef
 newRcbFromPeer rcbOpt peer = do
   rcbRef <- newRcb rcbOpt
-  rcb <- readMVar rcbRef
   let (bsFromRcb, bsToRcb) = transportsForRcb rcbRef
   async $ runEffect $ fromPeer peer >-> bsToRcb
   async $ runEffect $ bsFromRcb >-> toPeer peer
+  modifyMVar_ rcbRef $ \ rcb@(Rcb {..}) ->
+    return $ rcb { rcbExtraFinalizers = (closePeer peer) : rcbExtraFinalizers }
   return rcbRef
 
 gracefullyShutdownRcb :: RcbRef -> IO ()

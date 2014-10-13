@@ -41,7 +41,7 @@ punch connId localPort (remoteHostName, remotePort) = do
   punchSock connId (s, remoteAddr)
 
 punchSock connId (s, remoteAddr) = do
-  let peer = RawPeer s remoteAddr kRecvSize
+  peer <- mkRawPeer s remoteAddr kRecvSize
   -- Handshake: first message
   sendPeer peer (encodeGreeting $ HowAreYou connId)
 
