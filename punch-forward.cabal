@@ -24,6 +24,7 @@ executable punch-forward
     ViewPatterns, TypeSynonymInstances, FlexibleInstances,
     DeriveDataTypeable, GADTs, TupleSections
   hs-source-dirs:      src
+  ghc-options: -O -threaded
   build-depends:
     base >=4.7, transformers >=0.3, containers >=0.5,
     bytestring >=0.10, time >=1.4, deepseq >=1.3, network >=2.4,
@@ -31,7 +32,6 @@ executable punch-forward
     pipes-concurrency >=2.0.2, async >=2, cereal >=0.4.1,
     utf8-string >=0.3.8, mtl >=2.1, either >=4.3, aeson >= 0.7,
     HTTP >=4000.2, text >=1.1
-  ghc-options: -threaded -O
 executable http-broker
   main-is:             HttpBroker.hs
   default-language:    Haskell2010

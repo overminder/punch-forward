@@ -38,8 +38,10 @@ newBroker :: String -> String -> IO Broker
 newBroker endpoint vAddr = Broker endpoint vAddr <$> getIp
  where
   getIp = do
-    Origin hostName <- requestGetJson "http://httpbin.org/ip"
-    putStrLn $ "[newBroker.getIp] " ++ hostName
+    -- httpbin might return many ips, separated by comma
+    Origin hostNames <- requestGetJson "http://httpbin.org/ip"
+    let (hostName, _) = span (/= ',') hostNames
+    putStrLn $ "[newBroker.getIp] " ++ hostNames ++ ", using " ++ hostName
     resolveHost (Just hostName)
 
 bind :: Broker -> IO ()
