@@ -46,7 +46,7 @@ main = withSocketsDo $ do
         Left (e :: SomeException) -> putStrLn $ "[main.accept] " ++ show e
         Right sockAddr -> do
           putStrLn "[main] before punchSock"
-          mbRawPeer <- timeout punchTimeout $ SP.punchSock peerId sockAddr
+          mbRawPeer <- SP.punchSock peerId sockAddr punchTimeout
           case mbRawPeer of
             Nothing ->
               putStrLn "[main] punchSock timeout"
@@ -65,7 +65,7 @@ main = withSocketsDo $ do
         return ()
       Just sockAddr -> do
         putStrLn "[main] before punchSock"
-        mbRawPeer <- timeout punchTimeout $ SP.punchSock peerId sockAddr
+        mbRawPeer <- SP.punchSock peerId sockAddr punchTimeout
         case mbRawPeer of
           Nothing -> do
             putStrLn "[main] punchSock timeout"

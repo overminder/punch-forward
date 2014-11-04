@@ -1,7 +1,6 @@
 -- For NATs that keep the same port numbers for translated addresses.
 
 module Network.Punch.Peer.Simple (
-  punch,
   punchSock
 ) where
 
@@ -9,7 +8,7 @@ import Control.Applicative
 import qualified Data.ByteString.UTF8 as B
 import Network.Socket
 import Network.BSD
-import Network.BSD
+import System.Timeout (timeout)
 
 import Network.Punch.Peer.Types
 import Network.Punch.Util (sockAddrFor)
@@ -26,6 +25,7 @@ connIdMismatch connId g = gConnId g /= connId
 
 kRecvSize = 512
 
+{-
 punch
   :: String
   -- ^ The connection identifier
@@ -39,8 +39,17 @@ punch connId localPort (remoteHostName, remotePort) = do
   bindSocket s =<< sockAddrFor Nothing localPort
   remoteAddr <- sockAddrFor (Just remoteHostName) remotePort
   punchSock connId (s, remoteAddr)
+ -}
 
-punchSock connId (s, remoteAddr) = do
+punchSock
+  :: String 
+  -- ^ The connection identifier
+  -> (Socket, SockAddr)
+  -- ^ The bound socket to use
+  -> Int
+  -- ^ Timeout in micro
+  -> IO (Maybe RawPeer)
+punchSock connId (s, remoteAddr) timeoutMicro = do
   peer <- mkRawPeer s remoteAddr kRecvSize
   -- Handshake: first message
   sendPeer peer (encodeGreeting $ HowAreYou connId)
@@ -61,5 +70,6 @@ punchSock connId (s, remoteAddr) = do
             return ()
           FineThanksAndYou connId' ->
             putStrLn "punch.recv: handshake finished"
-  readReply
-  return peer
+  mbOk <- timeout timeoutMicro $ readReply
+  maybe (closePeer peer >> return Nothing) (const $ return (Just peer)) mbOk
+
