@@ -17,22 +17,21 @@ import Network.Punch.Broker.Http
 
 punchTimeout = 2500000
 
+parseArg [punchAction, peerId, fwdAction, port]
+  | fwdAction == "L" =
+    -- "ssh -L port:localhost:$rPort"
+    return (peerId, punchAction, (serveLocalRequest (read port)))
+  | fwdAction == "R" =
+    -- "ssh -R $lPort:localhost:port"
+    return (peerId, punchAction, (connectToDest (read port)))
+
+parseArg _ = Left "usage: [program] [serve|connect] peerId [L|C] port"
+
 main = withSocketsDo $ do
   let rcbOpt = ConnOption 50000 7 480
 
   args <- getArgs
-  eiF <- case args of
-    [punchAction, peerId, fwdAction, port]
-      | fwdAction == "L" ->
-        -- "ssh -L port:localhost:$rPort"
-        return $ Right (peerId, punchAction, (serveLocalRequest (read port)))
-      | fwdAction == "R" ->
-        -- "ssh -R $lPort:localhost:port"
-        return $ Right (peerId, punchAction, (connectToDest (read port)))
-    _ ->
-      return $ Left "usage: [program] [serve|connect] peerId [L|C] port"
-
-  case eiF of
+  case parseArg args of
     Left err -> putStrLn err
     Right (peerId, punchAct, onRcb) -> do
       broker <- newBroker Config.httpBroker peerId
