@@ -309,6 +309,10 @@ internalResetEverything rcb@(Rcb {..}) = do
   sealMailbox rcbToApp
   sealMailbox rcbFromNic
   sealMailbox rcbToNic
+
+  -- Stop the underlying raw peer
+  sequence_ rcbExtraFinalizers 
+
   -- And the runner threads will stop by themselves.
   return $ rcb { rcbState = RcbClosed }
 
