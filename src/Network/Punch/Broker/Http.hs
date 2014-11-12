@@ -22,6 +22,9 @@ import Network.HTTP
 import Network.Punch.Broker.Http.Types
 import Network.Punch.Util (resolveHost)
 
+import Config
+-- ^ XXX
+
 newtype Origin = Origin String
 
 instance A.FromJSON Origin where
@@ -38,10 +41,16 @@ newBroker :: String -> String -> IO Broker
 newBroker endpoint vAddr = Broker endpoint vAddr <$> getIp
  where
   getIp = do
-    -- httpbin might return many ips, separated by comma
-    Origin hostNames <- requestGetJson "http://httpbin.org/ip"
-    let (hostName, _) = span (/= ',') hostNames
-    putStrLn $ "[newBroker.getIp] " ++ hostNames ++ ", using " ++ hostName
+    hostName <- case Config.myIp of
+      Just ip -> do
+        putStrLn $ "[newBroker.getIp] Force using config value: " ++ ip
+        return ip
+      Nothing -> do
+        -- httpbin might return many ips, separated by comma
+        Origin hostNames <- requestGetJson "http://httpbin.org/ip"
+        let (hostName, _) = span (/= ',') hostNames
+        putStrLn $ "[newBroker.getIp] " ++ hostNames ++ ", using " ++ hostName
+        return hostName
     resolveHost (Just hostName)
 
 bind :: Broker -> IO ()
@@ -112,6 +121,7 @@ requestPostJson uri body = do
 
 mkBoundUdpSock = do
   s <- socket AF_INET Datagram defaultProtocol
+  -- ^ XXX: This might fail due to fd exhaustion.
   NS.bind s (SockAddrInet aNY_PORT iNADDR_ANY)
   setSocketOption s ReuseAddr 1
   SockAddrInet port _ <- getSocketName s
