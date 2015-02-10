@@ -3,7 +3,7 @@ module Network.Punch.Peer.Reliable.Types where
 import Control.Applicative ((<$>), (<*>))
 import Control.Concurrent.MVar
 import Control.Concurrent.Async (Async, async)
-import Control.Concurrent.STM (STM)
+import Control.Concurrent.STM (STM, TVar)
 import Control.DeepSeq (NFData)
 import qualified Data.ByteString as B
 import qualified Data.Serialize as S
@@ -52,11 +52,17 @@ data PacketFlag
   deriving (Show, Eq, Ord, Enum, Bounded, Typeable, Data)
 
 data ConnOption
-  = ConnOption {
-    optDefaultBackOff :: Int,
+  = ConnOption
+  { optDefaultBackOff :: Int
     -- ^ In micros
-    optMaxRetries :: Int,
-    optMaxPayloadSize :: Int
+  , optMaxRetries :: Int
+  , optMaxPayloadSize :: Int
+  , optMaxUnackedPackets :: Int
+    -- ^ Used to avoid congestion
+  , optTxBufferSize :: Int
+    -- ^ Size of the fromApp mailbox size
+  , optRxBufferSize :: Int
+    -- ^ Size of the toApp mailbox size
   }
 
 newtype Mailbox a = Mailbox (P.Output a, P.Input a, STM ())
@@ -102,6 +108,8 @@ data Rcb = Rcb
   -- This is the last DATA seq that we are going to receive.
   , rcbExtraFinalizers :: [IO ()]
   -- ^ In case this is connected to any other pipes
+  , rcbUnackedPackets :: TVar Int
+  -- ^ Used to track the current number of unacked packets.
   }
 
 type RcbRef = MVar Rcb

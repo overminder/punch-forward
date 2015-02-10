@@ -15,7 +15,7 @@ import Network.Punch.Peer.Types
 
 import Network.Punch.Broker.Http
 
-punchTimeout = 2500000
+punchTimeout = 10000000
 
 parseArg [punchAction, peerId, fwdAction, port]
   | fwdAction == "L" =
@@ -25,10 +25,10 @@ parseArg [punchAction, peerId, fwdAction, port]
     -- "ssh -R $lPort:localhost:port"
     return (peerId, punchAction, (connectToDest (read port)))
 
-parseArg _ = Left "usage: [program] [serve|connect] peerId [L|C] port"
+parseArg _ = Left "usage: [program] [serve|connect] peerId [L|R] port"
 
 main = withSocketsDo $ do
-  let rcbOpt = ConnOption 50000 7 480
+  let rcbOpt = ConnOption 50000 8 480 100 100 100
 
   args <- getArgs
   case parseArg args of

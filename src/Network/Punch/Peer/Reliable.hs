@@ -22,7 +22,14 @@ import Control.Monad (forM, replicateM, when)
 import Control.Applicative ((<$>), (<*>))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
-import Control.Concurrent.STM (STM, atomically)
+import Control.Concurrent.STM
+  ( STM
+  , atomically
+  , newTVarIO
+  , readTVar
+  , writeTVar
+  , retry
+  )
 import Data.Time
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -42,17 +49,19 @@ instance Peer RcbRef where
   closePeer = gracefullyShutdownRcb
 
 newRcb :: ConnOption -> IO RcbRef
-newRcb opt = do
+newRcb opt@(ConnOption {..}) = do
   rcbRef <- newEmptyMVar
   [fromNic, toNic] <- replicateM 2 $ P.spawn' P.Unbounded
-  fromApp <- P.spawn' P.Unbounded
-  toApp <- P.spawn' P.Unbounded
+  fromApp <- P.spawn' (P.Bounded optTxBufferSize)
+  toApp <- P.spawn' (P.Bounded optRxBufferSize)
 
   tResend <- async $ runResend rcbRef
   tRecv <- async $ runRecv rcbRef
   tSend <- async $ runSend rcbRef
   tKeepAlive <- async $ runKeepAlive rcbRef
   -- ^ Those will kill themselves when the connection is closed
+
+  unackedPackets <- newTVarIO 0
   
   putMVar rcbRef $ Rcb
     { rcbConnOpt = opt
@@ -68,6 +77,7 @@ newRcb opt = do
     , rcbResendQ = M.empty
     , rcbFinSeq = (-1)
     , rcbExtraFinalizers = []
+    , rcbUnackedPackets = unackedPackets
     }
   return rcbRef
 
@@ -191,8 +201,9 @@ runResend rcbRef = go
     let
       -- Add back new backoffs
       combine = maybe id (uncurry M.insert)
-      changedRcb = rcb { rcbResendQ = foldr combine rest newResends }
-    return changedRcb
+      newResendQ = foldr combine rest newResends
+    liftIO $ atomically $ writeTVar rcbUnackedPackets (M.size newResendQ)
+    return $ rcb { rcbResendQ = newResendQ }
 
 -- We will see many `True <- sendMailbox ...` here since this is expected
 -- to succeed -- the mailboxes will only be closed after we set the
@@ -318,20 +329,29 @@ internalResetEverything rcb@(Rcb {..}) = do
 
 runSend :: RcbRef -> IO ()
 runSend rcbRef = do
-  fromApp <- rcbFromApp <$> readMVar rcbRef
-  go fromApp
+  rcb <- readMVar rcbRef
+  -- Uses some of the static fields in the rcb.
+  go rcb
  where
-  go fromApp = do
-    mbBs <- recvMailbox fromApp
+  go rcb@(Rcb {..}) = do
+    let ConnOption {..} = rcbConnOpt
+    mbBs <- recvMailbox rcbFromApp
     case mbBs of
       Nothing ->
         -- Sealed: FIN or closed. This thread is done.
         return ()
       Just (seqNo, payload) -> do
+        -- Check if there are too many unacked packets. If so,
+        -- wait until the number decrease.
+        atomically $ do
+          unacked <- readTVar rcbUnackedPackets
+          if unacked >= optMaxUnackedPackets
+            then retry
+            else return ()
         modifyMVar_ rcbRef $ \ rcb@(Rcb {..}) ->
           sendDataOrFinPkt rcb (mkDataPkt seqNo payload)
         -- Loop
-        go fromApp
+        go rcb
 
 
 sendDataOrFinPkt :: Rcb -> Packet -> IO Rcb
@@ -344,6 +364,7 @@ sendDataOrFinPkt rcb@(Rcb {..}) packet@(Packet {..}) = do
       calcBackOff now (optDefaultBackOff rcbConnOpt)
     newOutputQ = M.insert pktSeqNo packet rcbOutputQ
     newResendQ = M.insert (nextTime, pktSeqNo) (nextBackOff, 0) rcbResendQ
+  atomically $ writeTVar rcbUnackedPackets (M.size newResendQ)
   return $ rcb
     { rcbOutputQ = newOutputQ
     , rcbResendQ = newResendQ
