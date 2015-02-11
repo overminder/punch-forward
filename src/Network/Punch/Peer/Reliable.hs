@@ -31,6 +31,7 @@ import Control.Concurrent.STM
   , newTVarIO
   , readTVar
   , writeTVar
+  , modifyTVar'
   , retry
   )
 import Data.Time
@@ -53,19 +54,15 @@ instance Peer RcbRef where
 
 newRcb :: ConnOption -> IO RcbRef
 newRcb opt@(ConnOption {..}) = do
-  let
-    mut = RcbMut
-      { rcbState = RcbOpen
-      , rcbSeqGen = 0
-      , rcbFinSeq = (-1)
-      , rcbLastDeliverySeq = 0
-      , rcbOutputQ = M.empty
-      , rcbDeliveryQ = M.empty
-      , rcbResendQ = M.empty
-      , rcbExtraFinalizers = []
-      }
+  stateRef <- newTVarIO RcbOpen
+  seqGenRef <- newTVarIO 0
+  finSeqRef <- newTVarIO (-1)
+  lastDeliverySeqRef <- newTVarIO 0
+  outputQRef <- newTVarIO M.empty
+  deliveryQRef <- newTVarIO M.empty
+  resendQRef <- newTVarIO M.empty
+  extraFinalizersRef <- newTVarIO []
 
-  mutRef <- newTVarIO mut
   -- Used for circular initialization
   rcbRef <- newEmptyMVar
   [fromNic, toNic] <- replicateM 2 $ P.spawn' P.Unbounded
@@ -78,58 +75,52 @@ newRcb opt@(ConnOption {..}) = do
   tKeepAlive <- async $ runKeepAlive rcbRef
   -- ^ Those will kill themselves when the connection is closed
   
-  putMVar rcbRef $ Rcb
-    { rcbConnOpt = opt
-    , rcbFromNic = Mailbox fromNic
-    , rcbToNic = Mailbox toNic
-    , rcbFromApp = Mailbox fromApp
-    , rcbToApp = Mailbox toApp
-    , rcbMutRef = mutRef
-    }
-  readMVar rcbRef
-
-modifyRcb :: Rcb -> (RcbMut -> STM (RcbMut, a)) -> STM a
-modifyRcb (Rcb {..}) f = do
-  mut <- readTVar rcbMutRef
-  (mut', a) <- f mut
-  writeTVar rcbMutRef mut'
-  return a
-
-modifyRcb_ :: Rcb -> (RcbMut -> STM RcbMut) -> STM ()
-modifyRcb_ rcb f = modifyRcb rcb f'
- where
-  f' mut = do
-    mut' <- f mut
-    return (mut', ())
+  let
+    rcb = Rcb
+      { rcbConnOpt = opt
+      , rcbFromNic = Mailbox fromNic
+      , rcbToNic = Mailbox toNic
+      , rcbFromApp = Mailbox fromApp
+      , rcbToApp = Mailbox toApp
+      , rcbState = stateRef
+      , rcbSeqGen = seqGenRef
+      , rcbFinSeq = finSeqRef
+      , rcbLastDeliverySeq = lastDeliverySeqRef
+      , rcbOutputQ = outputQRef
+      , rcbDeliveryQ = deliveryQRef
+      , rcbResendQ = resendQRef
+      , rcbExtraFinalizers = extraFinalizersRef
+      }
+  putMVar rcbRef rcb
+  return rcb
 
 newRcbFromPeer :: Peer p => ConnOption -> p -> IO RcbRef
 newRcbFromPeer rcbOpt peer = do
-  rcb <- newRcb rcbOpt
+  rcb@(Rcb {..}) <- newRcb rcbOpt
   let (bsFromRcb, bsToRcb) = transportsForRcb rcb
   async $ runEffect $ fromPeer peer >-> bsToRcb
   async $ runEffect $ bsFromRcb >-> toPeer peer
-  atomically $ modifyRcb_ rcb $ \ mut@(RcbMut {..}) ->
-    return $ mut
-      { rcbExtraFinalizers = (closePeer peer) : rcbExtraFinalizers }
+  atomically $ modifyTVar' rcbExtraFinalizers (closePeer peer :)
   return rcb
 
 gracefullyShutdownRcb :: RcbRef -> IO ()
-gracefullyShutdownRcb rcb = do
+gracefullyShutdownRcb rcb@(Rcb {..}) = do
   now <- getCurrentTime
-  atomically $ modifyRcb_ rcb $ \ mut@(RcbMut {..}) -> do
+  atomically $ do
+    seqGen <- readTVar rcbSeqGen
     let
-      finPkt = mkFinPkt $ rcbSeqGen + 1
-    mut' <- sendDataOrFinPkt rcb mut finPkt now
-    return $ mut' { rcbState = RcbFinSent }
+      finPkt = mkFinPkt $ seqGen + 1
+    mut' <- sendDataOrFinPkt rcb finPkt now
+    writeTVar rcbState RcbFinSent
 
 sendRcb :: RcbRef -> B.ByteString -> STM Bool
-sendRcb rcb@(Rcb {..}) bs = modifyRcb rcb $ \ mut@(RcbMut {..}) -> do
+sendRcb rcb@(Rcb {..}) bs = do
+  seqGen <- readTVar rcbSeqGen
   let
     bss = cutBs (optMaxPayloadSize rcbConnOpt) bs
-    newSeqGen = rcbSeqGen + length bss
-    changedMut = mut { rcbSeqGen = newSeqGen }
-  ok <- sendsMailbox rcbFromApp $ zip [rcbSeqGen + 1..] bss
-  return (changedMut, ok)
+    newSeqGen = seqGen + length bss
+  writeTVar rcbSeqGen newSeqGen
+  sendsMailbox rcbFromApp $ zip [seqGen + 1..] bss
 
 recvRcb :: RcbRef -> STM (Maybe B.ByteString)
 recvRcb rcb@(Rcb {..}) = recvMailbox rcbToApp
@@ -171,42 +162,50 @@ runResend rcbRef = readMVar rcbRef >>= go
     ioAction
     when shallContinue $ go rcb
 
-  goSTM rcb now = modifyRcb rcb $ \ mut@(RcbMut {..}) -> do
-    if rcbState == RcbClosed
-      then return (mut, (False, return ()))
+  goSTM rcb@(Rcb {..}) now = do
+    state <- readTVar rcbState
+    if state == RcbClosed
+      then return (False, return ())
       else do
-        eiMut <- runEitherT $ resendOnce rcb mut now
-        let
-          (mutRes, mbErr) = case eiMut of
-            Left e -> (mut, Just e)
-            Right changedMut
-              | isCloseWaitDone changedMut ->
-                (changedMut, Just GracefullyShutdown)
-              | otherwise ->
-                (changedMut, Nothing)
+        eiErr <- runEitherT $ resendOnce rcb now
+        mbErr <- case eiErr of
+          Left e -> return $ Just e
+          Right () -> do
+            cwd <- isCloseWaitDone rcb
+            if cwd
+              then return $ Just GracefullyShutdown
+              else return Nothing
         case mbErr of
           Nothing ->
-            return (mutRes, (True, return ()))
+            return (True, return ())
           Just err -> do
             let action = printCloseReason "runResend" err
-            (mutRes2, extraFinalizers) <- internalResetEverything rcb mutRes
-            return (mutRes2, (False, action >> extraFinalizers))
+            extraFinalizers <- internalResetEverything rcb
+            return (False, action >> extraFinalizers)
         
 
-  isCloseWaitDone :: RcbMut -> Bool
-  isCloseWaitDone (RcbMut {..}) =
-    rcbState == RcbCloseWait &&
-    rcbLastDeliverySeq + 1 == rcbFinSeq &&
-    -- ^ We have received all DATA packets from the other side.
-    M.null rcbOutputQ
+  isCloseWaitDone :: Rcb -> STM Bool
+  isCloseWaitDone (Rcb {..}) = do
+    state <- readTVar rcbState
+    lastDeliverySeq <- readTVar rcbLastDeliverySeq
+    finSeq <- readTVar rcbFinSeq 
+    outputQ <- readTVar rcbOutputQ
+    return $
+      state == RcbCloseWait &&
+      lastDeliverySeq + 1 == finSeq &&
+      -- ^ We have received all DATA packets from the other side.
+      M.null outputQ
     -- ^ And the other side has ACKed all of our DATA packets.
 
-  resendOnce :: Rcb -> RcbMut -> UTCTime -> EitherT CloseReason STM RcbMut
-  resendOnce (Rcb {..}) mut@(RcbMut {..}) now = do
-    let (works, rest) = M.split (now, (-1)) rcbResendQ
+  -- Resend packets in the resendQ and update their last-send-time
+  -- Invariant: (Left CloseReason) means that the rcb is not changed
+  resendOnce :: Rcb -> UTCTime -> EitherT CloseReason STM ()
+  resendOnce (Rcb {..}) now = do
+    (works, rest) <- M.split (now, (-1)) <$> lift (readTVar rcbResendQ)
+    outputQ <- lift $ readTVar rcbOutputQ
     newResends <- forM (M.toList works) $
       \ ((_, dataSeq), (backOff, numRetries)) -> do
-        case M.lookup dataSeq rcbOutputQ of
+        case M.lookup dataSeq outputQ of
           Nothing -> do
             -- Received ACK-ECHO for this packet and there is no need
             -- to keep resending this packet. Clear it.
@@ -230,7 +229,7 @@ runResend rcbRef = readMVar rcbRef >>= go
       -- Add back new backoffs
       combine = maybe id (uncurry M.insert)
       newResendQ = foldr combine rest newResends
-    return $ mut { rcbResendQ = newResendQ }
+    lift $ writeTVar rcbResendQ newResendQ
 
 -- We will see many `True <- sendMailbox ...` here since this is expected
 -- to succeed -- the mailboxes will only be closed after we set the
@@ -242,17 +241,17 @@ runRecv rcbRef = readMVar rcbRef >>= go
     mbLast <- atomically $ goSTM rcb
     case mbLast of
       Nothing -> go rcb
-      Just action ->
-        action
+      Just action -> action
 
+  goSTM :: Rcb -> STM (Maybe (IO ()))
   goSTM rcb@(Rcb {..}) = do
     mbPkt <- recvMailbox rcbFromNic
     case mbPkt of
       Just pkt -> do
-        mbErr <- modifyRcb rcb (onPkt pkt rcb)
+        mbErr <- onPkt pkt rcb
         return $ fmap mergeLogAndAction mbErr
       Nothing -> do
-        currState <- rcbState <$> readTVar rcbMutRef
+        currState <- readTVar rcbState
         if currState /= RcbClosed
           -- This mean the connection was closed.
           then return $ Just $ 
@@ -263,83 +262,69 @@ runRecv rcbRef = readMVar rcbRef >>= go
     AlreadyClosed -> action
     _ -> printCloseReason "runRecv|fromNic->Just" err >> action
 
-  onPkt :: Packet -> Rcb -> RcbMut
-        -> STM (RcbMut, Maybe (CloseReason, IO ()))
-  onPkt pkt rcb mut@(RcbMut {..}) = do
-    eiRes <- runEitherT $ onPktState rcbState pkt rcb mut
-    return $ either (second Just) (,Nothing) eiRes
+  onPkt :: Packet -> Rcb -> STM (Maybe (CloseReason, IO ()))
+  onPkt pkt rcb@(Rcb {..}) = do
+    state <- readTVar rcbState
+    eiRes <- runEitherT $ onPktState state pkt rcb
+    return $ either Just (const $ Nothing) eiRes
 
-  onPktState :: RcbState -> Packet -> Rcb -> RcbMut
-             -> EitherT (RcbMut, (CloseReason, IO ())) STM RcbMut
-  onPktState RcbClosed pkt@(Packet {..}) rcb mut@(RcbMut {..}) =
-    left (mut, (AlreadyClosed, return ()))
+  onPktState :: RcbState -> Packet -> Rcb
+             -> EitherT (CloseReason, IO ()) STM ()
+  onPktState RcbClosed pkt rcb =
+    left (AlreadyClosed, return ())
 
-  onPktState _ pkt@(Packet {..}) rcb@(Rcb {..}) mut@(RcbMut {..})
-    | pktFlags `areFlags` [DATA] = do
+  onPktState state pkt@(Packet {..}) rcb@(Rcb {..})
+    | pktFlags `areFlags` [DATA] = lift $ do
       -- Send a DATA-ACK anytime a DATA packet is received.
       let ackPkt = mkDataAckPkt pktSeqNo
-      True <- lift $ sendMailbox rcbToNic ackPkt
+      True <- sendMailbox rcbToNic ackPkt
 
       -- Check if we need to deliver this payload.
-      if rcbLastDeliverySeq < pktSeqNo
-        then do
-          let
-            -- And see how many payloads shall we deliver
-            insertedDeliveryQ = M.insert pktSeqNo pktPayload rcbDeliveryQ
-            (newDeliveryQ, newLastDeliverySeq, sequentialPayloads) =
-              mergeExtract insertedDeliveryQ rcbLastDeliverySeq
-          True <- any id . (True:)
-              <$> mapM (lift . sendMailbox rcbToApp) sequentialPayloads
-          return $ mut
-            { rcbDeliveryQ = newDeliveryQ
-            , rcbLastDeliverySeq = newLastDeliverySeq
-            }
-        else
-          return mut
+      lastDeliverySeq <- readTVar rcbLastDeliverySeq
+      when (lastDeliverySeq < pktSeqNo) $ do
+        deliveryQ <- readTVar rcbDeliveryQ
+        let
+          -- And see how many payloads shall we deliver
+          insertedDeliveryQ = M.insert pktSeqNo pktPayload deliveryQ
+          (newDeliveryQ, newLastDeliverySeq, sequentialPayloads) =
+            mergeExtract insertedDeliveryQ lastDeliverySeq
+        True <- any id . (True:)
+            <$> mapM (sendMailbox rcbToApp) sequentialPayloads
+        writeTVar rcbDeliveryQ newDeliveryQ
+        writeTVar rcbLastDeliverySeq newLastDeliverySeq
 
     | pktFlags `areFlags` [DATA, ACK] =
       -- And the resending thread will note this and stop rescheduling
       -- this packet.
-      return $ mut { rcbOutputQ = M.delete pktSeqNo rcbOutputQ }
+      lift $ modifyTVar' rcbOutputQ $ M.delete pktSeqNo
 
-    | pktFlags `areFlags` [FIN] = do
+    | pktFlags `areFlags` [FIN] = lift $ do
       -- Always send a reply.
       let ackPkt = mkFinAckPkt pktSeqNo
-      True <- lift $ sendMailbox rcbToNic ackPkt
+      True <- sendMailbox rcbToNic ackPkt
       -- Shutdown App -> Nic.
-      lift $ sealMailbox rcbFromApp
-      let
-        mbChange = case rcbState of
-          RcbOpen -> Just $ \ s -> s
-            -- Only change the state and record the seq when we were open.
-            { rcbFinSeq = pktSeqNo
-            , rcbState = RcbCloseWait
-            }
-          _ -> Nothing
-      return $ maybe mut ($ mut) mbChange
+      sealMailbox rcbFromApp
+      when (state == RcbOpen) $ do
+        -- Only change the state and record the seq when we were open.
+        writeTVar rcbFinSeq pktSeqNo
+        writeTVar rcbState RcbCloseWait
 
-    | pktFlags `areFlags` [FIN, ACK] = do
-      let
-        mbChange = case rcbState of
-          RcbFinSent -> Just $ \ s -> s
-            -- Set the state to CloseWait if not there yet.
-            -- If we changed the state, record the FIN's seqNo as well.
-            { rcbFinSeq = pktSeqNo
-            , rcbState = RcbCloseWait
-            , rcbOutputQ = M.delete pktSeqNo rcbOutputQ
-            -- Also stop sending the FIN
-            }
-          _ -> Nothing
-      return $ maybe mut ($ mut) mbChange
+    | pktFlags `areFlags` [FIN, ACK] && state == RcbFinSent = lift $ do
+      -- Set the state to CloseWait if not there yet.
+      -- If we changed the state, record the FIN's seqNo as well.
+      writeTVar rcbFinSeq pktSeqNo
+      writeTVar rcbState RcbCloseWait
+      -- Also stop sending the FIN
+      modifyTVar' rcbOutputQ $ M.delete pktSeqNo
 
     | pktFlags `areFlags` [RST] = do
       -- This can happen before FIN-ACK is received (if we are initiating
       -- the graceful shutdown)
       let
-        reason = if rcbState == RcbClosed then AlreadyClosed else PeerClosed
-        logAction = putStrLn $ "RST on " ++ show rcbState
-      (mut', extraFinalizers) <- lift $ internalResetEverything rcb mut
-      left (mut', (reason, logAction >> extraFinalizers))
+        reason = if state == RcbClosed then AlreadyClosed else PeerClosed
+        logAction = putStrLn $ "RST on " ++ show state
+      extraFinalizers <- lift $ internalResetEverything rcb
+      left (reason, logAction >> extraFinalizers)
 
 runKeepAlive rcbRef = readMVar rcbRef >>= go
  where 
@@ -350,8 +335,8 @@ runKeepAlive rcbRef = readMVar rcbRef >>= go
       then go rcb
       else return ()
 
-internalResetEverything :: Rcb -> RcbMut -> STM (RcbMut, IO ())
-internalResetEverything rcb@(Rcb {..}) mut@(RcbMut {..}) = do
+internalResetEverything :: Rcb -> STM (IO ())
+internalResetEverything rcb@(Rcb {..}) = do
   -- We send an RST as well
   sendMailbox rcbToNic mkRstPkt
 
@@ -360,11 +345,12 @@ internalResetEverything rcb@(Rcb {..}) mut@(RcbMut {..}) = do
   sealMailbox rcbFromNic
   sealMailbox rcbToNic
 
-  -- Stop the underlying raw peer
-  let extraFinalizers = sequence_ rcbExtraFinalizers 
+  writeTVar rcbState RcbClosed
 
+  -- Let the caller to stop the underlying raw peer
   -- And the runner threads will stop by themselves.
-  return (mut { rcbState = RcbClosed }, extraFinalizers)
+  extraFinalizers <- readTVar rcbExtraFinalizers 
+  return $ sequence_ extraFinalizers 
 
 runSend :: MVar Rcb -> IO ()
 runSend rcbRef = readMVar rcbRef >>= go
@@ -379,7 +365,7 @@ runSend rcbRef = readMVar rcbRef >>= go
     -- wait until the number decrease.
     let ConnOption {..} = rcbConnOpt
 
-    unacked <- M.size . rcbResendQ <$> readTVar rcbMutRef
+    unacked <- M.size <$> readTVar rcbResendQ
     if unacked >= optMaxUnackedPackets
       then retry
       else return ()
@@ -391,28 +377,24 @@ runSend rcbRef = readMVar rcbRef >>= go
         -- False to discontinue the loop
         return False
       Just (seqNo, payload) -> do
-        modifyRcb_ rcb $ \ mut ->
-          sendDataOrFinPkt rcb mut (mkDataPkt seqNo payload) now
-        -- Loop
+        sendDataOrFinPkt rcb (mkDataPkt seqNo payload) now
+        -- True to continue the loop
         return True
 
   barf :: SomeException -> IO ()
   barf e = do
     putStrLn $ "[runSend] STM.retry: " ++ show e
 
-sendDataOrFinPkt :: Rcb -> RcbMut -> Packet -> UTCTime -> STM RcbMut
-sendDataOrFinPkt (Rcb {..}) mut@(RcbMut {..}) packet@(Packet {..}) now = do
+sendDataOrFinPkt :: Rcb -> Packet -> UTCTime -> STM ()
+sendDataOrFinPkt (Rcb {..}) packet@(Packet {..}) now = do
   sendMailbox rcbToNic packet
   let
     -- Add to OutputQ and schedule a resend
     (nextTime, nextBackOff) =
       calcBackOff now (optDefaultBackOff rcbConnOpt)
-    newOutputQ = M.insert pktSeqNo packet rcbOutputQ
-    newResendQ = M.insert (nextTime, pktSeqNo) (nextBackOff, 0) rcbResendQ
-  return $ mut
-    { rcbOutputQ = newOutputQ
-    , rcbResendQ = newResendQ
-    }
+  modifyTVar' rcbOutputQ $ M.insert pktSeqNo packet
+  modifyTVar' rcbResendQ $ M.insert (nextTime, pktSeqNo) (nextBackOff, 0)
+
 
 sendMailbox :: Mailbox a -> a -> STM Bool
 sendMailbox (Mailbox (output, _, _)) a = P.send output a
@@ -449,3 +431,4 @@ mergeExtract m begin = go m begin []
 printCloseReason :: String -> CloseReason -> IO ()
 printCloseReason tag err =
   printf "[%s] Connection closed by `%s`.\n" tag (show err)
+

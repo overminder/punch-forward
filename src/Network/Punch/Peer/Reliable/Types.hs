@@ -97,24 +97,21 @@ data Rcb = Rcb
   -- We link the seqNo early since this makes FIN handling easier.
   , rcbToApp :: Mailbox B.ByteString
   -- ^ Used to track the current number of unacked packets.
-  , rcbMutRef :: TVar RcbMut
-  }
 
-data RcbMut = RcbMut
-  { rcbState :: RcbState
-  , rcbSeqGen :: Int
-  , rcbFinSeq :: Int
+  , rcbState :: TVar RcbState
+  , rcbSeqGen :: TVar Int
+  , rcbFinSeq :: TVar Int
   -- ^ Only available when entering the CloseWait state.
   -- This is the last DATA seq that we are going to receive.
-  , rcbLastDeliverySeq :: Int
+  , rcbLastDeliverySeq :: TVar Int
 
   -- ^ In case this is connected to any other pipes
-  , rcbOutputQ :: OutputQueue
-  , rcbDeliveryQ :: DeliveryQueue
-  , rcbResendQ :: ResendQueue
+  , rcbOutputQ :: TVar OutputQueue
+  , rcbDeliveryQ :: TVar DeliveryQueue
+  , rcbResendQ :: TVar ResendQueue
   -- ^ A priority-queue like for the timer thread to use
 
-  , rcbExtraFinalizers :: [IO ()]
+  , rcbExtraFinalizers :: TVar [IO ()]
   }
 
 type RcbRef = Rcb
