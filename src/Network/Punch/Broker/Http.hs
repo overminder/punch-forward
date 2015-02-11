@@ -47,6 +47,7 @@ newBroker endpoint vAddr = Broker endpoint vAddr <$> getIp
         return ip
       Nothing -> do
         -- httpbin might return many ips, separated by comma
+        putStrLn $ "[Http.newBroker] fetching my IP"
         Origin hostNames <- requestGetJson "http://httpbin.org/ip"
         let (hostName, _) = span (/= ',') hostNames
         putStrLn $ "[newBroker.getIp] " ++ hostNames ++ ", using " ++ hostName
@@ -55,6 +56,7 @@ newBroker endpoint vAddr = Broker endpoint vAddr <$> getIp
 
 bind :: Broker -> IO ()
 bind (Broker {..}) = do
+  putStrLn $ "[Http.bind] started"
   msg <- requestPostJson uri brOurHost :: IO Msg
   putStrLn $ "[Http.bind] " ++ show msg
   return ()
