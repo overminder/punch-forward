@@ -90,29 +90,34 @@ data CloseReason
 -- | Reliable Control Block
 data Rcb = Rcb
   { rcbConnOpt :: ConnOption
-  , rcbState :: RcbState
   , rcbFromNic :: Mailbox Packet
   , rcbToNic :: Mailbox Packet
   , rcbFromApp :: Mailbox (Int, B.ByteString)
   -- ^ (SeqNo, Payload)
   -- We link the seqNo early since this makes FIN handling easier.
   , rcbToApp :: Mailbox B.ByteString
+  -- ^ Used to track the current number of unacked packets.
+  , rcbMutRef :: TVar RcbMut
+  }
+
+data RcbMut = RcbMut
+  { rcbState :: RcbState
   , rcbSeqGen :: Int
-  , rcbOutputQ :: OutputQueue
-  , rcbDeliveryQ :: DeliveryQueue
-  , rcbLastDeliverySeq :: Int
-  , rcbResendQ :: ResendQueue
-  -- A priority-queue like for the timer thread to use
   , rcbFinSeq :: Int
   -- ^ Only available when entering the CloseWait state.
   -- This is the last DATA seq that we are going to receive.
-  , rcbExtraFinalizers :: [IO ()]
+  , rcbLastDeliverySeq :: Int
+
   -- ^ In case this is connected to any other pipes
-  , rcbUnackedPackets :: TVar Int
-  -- ^ Used to track the current number of unacked packets.
+  , rcbOutputQ :: OutputQueue
+  , rcbDeliveryQ :: DeliveryQueue
+  , rcbResendQ :: ResendQueue
+  -- ^ A priority-queue like for the timer thread to use
+
+  , rcbExtraFinalizers :: [IO ()]
   }
 
-type RcbRef = MVar Rcb
+type RcbRef = Rcb
 
 -- Serialization
 putPacket :: Packet -> S.Put

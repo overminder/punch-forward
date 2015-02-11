@@ -28,7 +28,7 @@ parseArg [punchAction, peerId, fwdAction, port]
 parseArg _ = Left "usage: [program] [serve|connect] peerId [L|R] port"
 
 main = withSocketsDo $ do
-  let rcbOpt = ConnOption 50000 8 480 100 100 100
+  let rcbOpt = ConnOption 50000 8 480 1000 1000 1000
 
   args <- getArgs
   case parseArg args of
