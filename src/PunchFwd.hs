@@ -1,86 +1,114 @@
 {-# LANGUAGE RecordWildCards #-}
 
+import Control.Applicative
 import Control.Monad (forever, void)
 import Control.Exception (try, SomeException)
 import Network.Socket (withSocketsDo)
 import Control.Concurrent.Async (async)
 import Control.Concurrent.MVar
 import System.Environment
+import qualified Network.Socket.ByteString as B
+import Network.Socket
+import Network.BSD
 import System.Timeout
 import Pipes (runEffect, (>->))
 import Text.Read (readMaybe)
 
 import qualified Config
 import qualified Network.Punch.Peer.Simple as SP
+import Network.Punch.Peer.Simple (kRecvSize)
 import Network.Punch.Peer.Reliable
 import Network.Punch.Peer.PortFwd
 import Network.Punch.Peer.Types
+import Network.Punch.Util
 
-import Network.Punch.Broker.Http
+import qualified Network.Punch.Broker.Http as BH
 
 punchTimeout = 10000000
 
 data Action
   = PunchForward
     { pfPeerId :: String
-    , pfPunchAction :: PunchAction
+    , pfServiceAction :: ServiceAction
     , pfFwdAction :: ForwardAction
     , pfFwdPort :: Int
     }
   | ForwardLite
     { flListenPort :: Int
-    , flConnPort :: Int
+      -- ^ The local UDP port to bind to, or the local TCP port to
+      -- forward from.
+    , flConnAddr :: SockAddr
+      -- ^ The remote UDP host to connect to, or the local TCP host
+      -- to forward incoming peers to.
+    , flAction :: ServiceAction
     }
   | Usage String
   deriving (Show, Eq)
 
-data PunchAction = Serve | Connect
+data ServiceAction = Serve | Connect
   deriving (Show, Read, Eq)
 
 data ForwardAction = Local | Remote
   deriving (Show, Read, Eq)
 
 -- "ssh -L|-R _:localhost:port"
-parseArg [ readMaybe -> Just punchAction
+parseArg [ readMaybe -> Just serviceAction
          , peerId
          , readMaybe -> Just fwdAction
          , readMaybe -> Just port]
-  = PunchForward peerId punchAction fwdAction port
+  = return $ PunchForward peerId serviceAction fwdAction port
 
-parseArg [ "ServeLite"
+parseArg [ "Lite"
+         , readMaybe -> Just serviceAction
          , readMaybe -> Just listenPort
-         , readMaybe -> Just connPort]
-  = ForwardLite
+         , connHost
+         , readMaybe -> Just connPort] = do
+  addr <- sockAddrFor (Just connHost) connPort
+  return $ ForwardLite
     { flListenPort = listenPort
-    , flConnPort = connPort
+    , flConnAddr = addr
+    , flAction = serviceAction
     }
 
-parseArg _ = Usage $ unlines errMsg
+
+parseArg _ = return $ Usage $ unlines errMsg
  where
   errMsg = [ "usage: [program] OPTIONS"
            , " where OPTIONS can be:"
-           , "  ( 'Serve' | 'Connect' ) PEER_ID ( 'Local' | 'Remote' ) PORT"
-           , "  'ServeLite' LISTEN_PORT CONNECT_PORT"
+           , "  SERVICE_ACTION PEER_ID ( 'Local' | 'Remote' ) PORT"
+           , "  'Lite' SERVICE_ACTION LISTEN_PORT CONNECT_HOST CONNECT_PORT"
+           , " where SERVICE_ACTION can be:"
+           , "  ( 'Serve' | 'Connect' )"
            ]
 
 main = withSocketsDo $ do
   let rcbOpt = ConnOption 50000 8 480 1000 1000 1000
 
-  args <- getArgs
-  case parseArg args of
+  args <- parseArg =<< getArgs
+  case args of
     Usage u -> putStrLn u
     action@(ForwardLite {..}) -> do
       forwardLite rcbOpt action
     action@(PunchForward {..}) -> do
-      broker <- newBroker Config.httpBroker pfPeerId
+      broker <- BH.newBroker Config.httpBroker pfPeerId
       punchForward rcbOpt broker action
 
-forwardLite rcbOpt (ForwardLite {..}) = error "Not implemented"
+forwardLite rcbOpt (ForwardLite { flAction = Serve, ..}) = do
+  (serverSock, _) <- mkBoundUdpSock $ Just (fromIntegral flListenPort)
+  (_, fromAddr) <- B.recvFrom serverSock kRecvSize
+  rawPeer <- mkRawPeer serverSock fromAddr kRecvSize
+  let SockAddrInet connPort _ = flConnAddr
+  runFwdAction Remote (fromIntegral connPort) $ newRcbFromPeer rcbOpt rawPeer
 
-punchForward rcbOpt broker (PunchForward { pfPunchAction = Serve, .. }) = do
-  bind broker
+forwardLite rcbOpt (ForwardLite { flAction = Connect, ..}) = do
+  (clientSock, _) <- mkBoundUdpSock Nothing
+  rawPeer <- mkRawPeer clientSock flConnAddr kRecvSize
+  runFwdAction Local flListenPort $ newRcbFromPeer rcbOpt rawPeer
+
+punchForward rcbOpt broker (PunchForward { pfServiceAction = Serve, .. }) = do
+  BH.bind broker
   forever $ do
-    eiSockAddr <- try (accept broker)
+    eiSockAddr <- try (BH.accept broker)
     case eiSockAddr of
       Left (e :: SomeException) -> putStrLn $ "[main.accept] " ++ show e
       Right sockAddr -> do
@@ -97,8 +125,8 @@ punchForward rcbOpt broker (PunchForward { pfPunchAction = Serve, .. }) = do
                 newRcbFromPeer rcbOpt rawPeer
               putStrLn "[main] fwdloop done..."
 
-punchForward rcbOpt broker (PunchForward { pfPunchAction = Connect, ..}) = do
-  mbSock <- connect broker
+punchForward rcbOpt broker (PunchForward { pfServiceAction = Connect, ..}) = do
+  mbSock <- BH.connect broker
   case mbSock of
     Nothing -> do
       putStrLn "[main.connect] refused"
@@ -118,3 +146,4 @@ punchForward rcbOpt broker (PunchForward { pfPunchAction = Connect, ..}) = do
 runFwdAction :: Peer p => ForwardAction -> Int -> IO p -> IO ()
 runFwdAction Local = serveLocalRequest
 runFwdAction Remote = connectToDest
+

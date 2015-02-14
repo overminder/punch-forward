@@ -1,7 +1,8 @@
 -- For NATs that keep the same port numbers for translated addresses.
 
 module Network.Punch.Peer.Simple (
-  punchSock
+  punchSock,
+  kRecvSize
 ) where
 
 import Control.Applicative

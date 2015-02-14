@@ -20,7 +20,7 @@ import Network.HTTP
   , getResponseBody)
 
 import Network.Punch.Broker.Http.Types
-import Network.Punch.Util (resolveHost)
+import Network.Punch.Util (resolveHost, mkBoundUdpSock)
 
 import Config
 -- ^ XXX
@@ -65,7 +65,7 @@ bind (Broker {..}) = do
 
 accept :: Broker -> IO (Socket, SockAddr)
 accept broker@(Broker {..}) = do
-  (s, myPort) <- mkBoundUdpSock
+  (s, myPort) <- mkBoundUdpSock Nothing
   let
     uri = brEndpoint ++ "/accept/" ++ brOurVAddr
     myPortInt = fromIntegral myPort :: Int
@@ -88,7 +88,7 @@ accept broker@(Broker {..}) = do
 
 connect :: Broker -> IO (Maybe (Socket, SockAddr))
 connect (Broker {..}) = do
-  (s, myPort) <- mkBoundUdpSock
+  (s, myPort) <- mkBoundUdpSock Nothing
   let
     myPortInt = fromIntegral myPort :: Int
     uri = brEndpoint ++ "/connect/" ++ brOurVAddr
@@ -120,12 +120,4 @@ requestPostJson uri body = do
     Just a -> return a
     Nothing -> throwIO (userError $
       "requestPostJson " ++ uri ++ ": no parse: " ++ bodyStr)
-
-mkBoundUdpSock = do
-  s <- socket AF_INET Datagram defaultProtocol
-  -- ^ XXX: This might fail due to fd exhaustion.
-  NS.bind s (SockAddrInet aNY_PORT iNADDR_ANY)
-  setSocketOption s ReuseAddr 1
-  SockAddrInet port _ <- getSocketName s
-  return (s, port)
 

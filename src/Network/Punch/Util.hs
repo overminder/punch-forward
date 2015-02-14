@@ -46,3 +46,12 @@ pipeWith printIt = forever $ do
   yield wat
 
 mapPipe f = forever (yield . f =<< await)
+
+mkBoundUdpSock mbPort = do
+  s <- socket AF_INET Datagram defaultProtocol
+  -- ^ XXX: This might fail due to fd exhaustion.
+  let port = maybe aNY_PORT id mbPort
+  bind s (SockAddrInet port iNADDR_ANY)
+  setSocketOption s ReuseAddr 1
+  SockAddrInet port _ <- getSocketName s
+  return (s, port)
