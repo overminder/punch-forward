@@ -428,7 +428,7 @@ sealMailbox :: Mailbox a -> STM ()
 sealMailbox (Mailbox (_, _, seal)) = seal
 
 calcBackOff :: UTCTime -> Int -> (UTCTime, Int)
-calcBackOff now backOff = (nextTime, backOff * 2)
+calcBackOff now backOff = (nextTime, floor $ (fromIntegral backOff) * 1.2)
  where
   nextBackOffSec = fromIntegral backOff / 1000000
   nextTime = addUTCTime nextBackOffSec now
