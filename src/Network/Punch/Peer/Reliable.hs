@@ -33,6 +33,7 @@ import Control.Concurrent.STM
   , writeTVar
   , modifyTVar'
   , retry
+  , orElse
   )
 import Data.Time
 import qualified Data.List as L
@@ -65,8 +66,12 @@ newRcb opt@(ConnOption {..}) = do
 
   -- Used for circular initialization
   rcbRef <- newEmptyMVar
-  [fromNic, toNic] <- replicateM 2 $ P.spawn' P.Unbounded
+
+  -- Bounded buffers for inter-thread communications
   fromApp <- P.spawn' (P.Bounded optTxBufferSize)
+  -- This is unbounded: NIC's tx is controlled by the unacked packet count
+  toNic <- P.spawn' P.Unbounded
+  fromNic <- P.spawn' (P.Bounded optRxBufferSize)
   toApp <- P.spawn' (P.Bounded optRxBufferSize)
 
   tResend <- async $ runResend rcbRef
@@ -120,9 +125,11 @@ sendRcb rcb@(Rcb {..}) bs = do
     bss = cutBs (optMaxPayloadSize rcbConnOpt) bs
     newSeqGen = seqGen + length bss
   writeTVar rcbSeqGen newSeqGen
+  -- Blocks when fromApp buffer is full.
   sendsMailbox rcbFromApp $ zip [seqGen + 1..] bss
 
 recvRcb :: RcbRef -> STM (Maybe B.ByteString)
+-- Blocks when toApp buffer is empty
 recvRcb rcb@(Rcb {..}) = recvMailbox rcbToApp
 
 transportsForRcb
@@ -213,7 +220,7 @@ runResend rcbRef = readMVar rcbRef >>= go
           Just dataPkt -> if numRetries > optMaxRetries rcbConnOpt
             then left TooManyRetries
             else do
-              -- Try to send it
+              -- Try to resend it
               ok <- lift $ sendMailbox rcbToNic dataPkt
               if not ok
                 then
@@ -274,24 +281,33 @@ runRecv rcbRef = readMVar rcbRef >>= go
     left (AlreadyClosed, return ())
 
   onPktState state pkt@(Packet {..}) rcb@(Rcb {..})
-    | pktFlags `areFlags` [DATA] = lift $ do
-      -- Send a DATA-ACK anytime a DATA packet is received.
-      let ackPkt = mkDataAckPkt pktSeqNo
-      True <- sendMailbox rcbToNic ackPkt
+    | pktFlags `areFlags` [DATA] =
+      let
+        sendDataToApp = do
+          -- Send a DATA-ACK anytime a DATA packet is received.
+          let ackPkt = mkDataAckPkt pktSeqNo
+          True <- sendMailbox rcbToNic ackPkt
 
-      -- Check if we need to deliver this payload.
-      lastDeliverySeq <- readTVar rcbLastDeliverySeq
-      when (lastDeliverySeq < pktSeqNo) $ do
-        deliveryQ <- readTVar rcbDeliveryQ
-        let
-          -- And see how many payloads shall we deliver
-          insertedDeliveryQ = M.insert pktSeqNo pktPayload deliveryQ
-          (newDeliveryQ, newLastDeliverySeq, sequentialPayloads) =
-            mergeExtract insertedDeliveryQ lastDeliverySeq
-        True <- any id . (True:)
-            <$> mapM (sendMailbox rcbToApp) sequentialPayloads
-        writeTVar rcbDeliveryQ newDeliveryQ
-        writeTVar rcbLastDeliverySeq newLastDeliverySeq
+          -- Check if we need to deliver this payload.
+          lastDeliverySeq <- readTVar rcbLastDeliverySeq
+          when (lastDeliverySeq < pktSeqNo) $ do
+            deliveryQ <- readTVar rcbDeliveryQ
+            let
+              -- And see how many payloads shall we deliver
+              insertedDeliveryQ = M.insert pktSeqNo pktPayload deliveryQ
+              (newDeliveryQ, newLastDeliverySeq, sequentialPayloads) =
+                mergeExtract insertedDeliveryQ lastDeliverySeq
+            -- This might block if toApp mailbox is full.
+            -- In this case, the other branch (dropThePacket)
+            -- will be taken.
+            True <- sendsMailbox rcbToApp sequentialPayloads
+            writeTVar rcbDeliveryQ newDeliveryQ
+            writeTVar rcbLastDeliverySeq newLastDeliverySeq
+
+        -- Drop the packet reply when the toApp queue is full
+        dropThePacket = return ()
+      in
+        lift (sendDataToApp `orElse` dropThePacket)
 
     | pktFlags `areFlags` [DATA, ACK] =
       -- And the resending thread will note this and stop rescheduling
@@ -365,10 +381,8 @@ runSend rcbRef = readMVar rcbRef >>= go
     -- wait until the number decrease.
     let ConnOption {..} = rcbConnOpt
 
-    unacked <- M.size <$> readTVar rcbResendQ
-    if unacked >= optMaxUnackedPackets
-      then retry
-      else return ()
+    tooManyUnacks <- txUnackOverflow rcb
+    when tooManyUnacks retry
 
     mbBs <- recvMailbox rcbFromApp
     case mbBs of
@@ -431,4 +445,10 @@ mergeExtract m begin = go m begin []
 printCloseReason :: String -> CloseReason -> IO ()
 printCloseReason tag err =
   printf "[%s] Connection closed by `%s`.\n" tag (show err)
+
+txUnackOverflow :: Rcb -> STM Bool
+txUnackOverflow (Rcb {..}) = do
+  let ConnOption {..} = rcbConnOpt
+  unacked <- M.size <$> readTVar rcbResendQ
+  return $ unacked >= optMaxUnackedPackets
 
