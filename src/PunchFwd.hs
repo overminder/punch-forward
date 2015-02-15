@@ -82,7 +82,7 @@ parseArg _ = return $ Usage $ unlines errMsg
            ]
 
 main = withSocketsDo $ do
-  let rcbOpt = ConnOption 50000 8 480 1000 1000 1000
+  let rcbOpt = ConnOption 50000 30 480 200 200 200
 
   args <- parseArg =<< getArgs
   case args of
