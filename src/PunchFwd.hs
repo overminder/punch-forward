@@ -82,9 +82,11 @@ parseArg _ = return $ Usage $ unlines errMsg
            ]
 
 main = withSocketsDo $ do
-  let rcbOpt = ConnOption 50000 30 480 200 200 200
+  (read -> bufSiz):rawArgs <- getArgs
+  let
+    rcbOpt = ConnOption 50000 30 480 bufSiz bufSiz bufSiz
 
-  args <- parseArg =<< getArgs
+  args <- parseArg rawArgs
   case args of
     Usage u -> putStrLn u
     action@(ForwardLite {..}) -> do
