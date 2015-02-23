@@ -15,7 +15,8 @@ data ErrorCode
   | Other String
   deriving (Show, Read)
 
-data Ipv4Addr = Ipv4Addr HostAddress PortNumber
+-- E.g. ('127.0.0.1', 80)
+data Ipv4Addr = Ipv4Addr String Int
   deriving (Show)
 
 data Msg
@@ -24,25 +25,29 @@ data Msg
   | MsgOkAddr Ipv4Addr
   deriving (Show)
 
-fromIpv4 :: Ipv4Addr -> SockAddr
-fromIpv4 (Ipv4Addr host port) = SockAddrInet port host
+-- Request to accept or connect to a peer.
+-- Contains the port that we are using.
+newtype CommRequest = CommRequest PortNumber
 
-toIpv4 :: SockAddr -> Maybe Ipv4Addr
-toIpv4 (SockAddrInet port host) = Just $ Ipv4Addr host port
-toIpv4 _ = Nothing
+instance ToJSON CommRequest where
+  toJSON (CommRequest port) = object ["port" .= (fromIntegral port :: Int)]
+
+fromIpv4 :: Ipv4Addr -> IO SockAddr
+fromIpv4 (Ipv4Addr host port) = SockAddrInet (fromIntegral port)
+  <$> inet_addr host
+
+toIpv4 :: SockAddr -> IO (Maybe Ipv4Addr)
+toIpv4 (SockAddrInet port host) = Just
+  <$> (Ipv4Addr <$> inet_ntoa host <*> pure (fromIntegral port))
+toIpv4 _ = return $ Nothing
 
 instance ToJSON Ipv4Addr where
-  toJSON (Ipv4Addr host port) = object ["port" .= portInt, "host" .= host]
-   where
-    portInt = fromIntegral port :: Int
+  toJSON (Ipv4Addr host port) = object ["port" .= port, "host" .= host]
 
 instance FromJSON Ipv4Addr where
   parseJSON (Object v) = Ipv4Addr
     <$> v .: "host"
-    <*> (fromInt <$> v .: "port")
-   where
-    fromInt :: Int -> PortNumber
-    fromInt = fromIntegral
+    <*> v .: "port"
 
 instance ToJSON ErrorCode where
   toJSON e = object $ ["code" .= errorCode] <> extra

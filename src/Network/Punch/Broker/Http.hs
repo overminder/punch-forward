@@ -1,3 +1,5 @@
+{-# LANGUAGE TupleSections #-}
+
 module Network.Punch.Broker.Http
   ( Broker
   , newBroker
@@ -8,6 +10,8 @@ module Network.Punch.Broker.Http
 
 import Control.Applicative ((<$>))
 import Control.Exception (throwIO)
+import System.IO.Error (userError)
+import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy.UTF8 as BLU8
 import Network.Socket hiding (bind, accept, connect)
@@ -25,39 +29,19 @@ import Network.Punch.Util (resolveHost, mkBoundUdpSock)
 import Config
 -- ^ XXX
 
-newtype Origin = Origin String
-
-instance A.FromJSON Origin where
-  parseJSON (A.Object v) = Origin <$> v A..: "origin"
-
 data Broker = Broker
   { brEndpoint :: String
   -- ^ Without trailing slash
   , brOurVAddr :: String
-  , brOurHost :: HostAddress
   }
 
 newBroker :: String -> String -> IO Broker
-newBroker endpoint vAddr = Broker endpoint vAddr <$> getIp
- where
-  getIp = do
-    hostName <- case Config.myIp of
-      Just ip -> do
-        putStrLn $ "[newBroker.getIp] Force using config value: " ++ ip
-        return ip
-      Nothing -> do
-        -- httpbin might return many ips, separated by comma
-        putStrLn $ "[Http.newBroker] fetching my IP"
-        Origin hostNames <- requestGetJson "http://httpbin.org/ip"
-        let (hostName, _) = span (/= ',') hostNames
-        putStrLn $ "[newBroker.getIp] " ++ hostNames ++ ", using " ++ hostName
-        return hostName
-    resolveHost (Just hostName)
+newBroker endpoint vAddr = return $ Broker endpoint vAddr
 
 bind :: Broker -> IO ()
 bind (Broker {..}) = do
   putStrLn $ "[Http.bind] started"
-  msg <- requestPostJson uri brOurHost :: IO Msg
+  msg <- requestPostJson uri (Nothing :: Maybe String) :: IO Msg
   putStrLn $ "[Http.bind] " ++ show msg
   return ()
  where
@@ -65,38 +49,37 @@ bind (Broker {..}) = do
 
 accept :: Broker -> IO (Socket, SockAddr)
 accept broker@(Broker {..}) = do
-  (s, myPort) <- mkBoundUdpSock Nothing
+  (s, serverPort) <- mkBoundUdpSock Nothing
   let
     uri = brEndpoint ++ "/accept/" ++ brOurVAddr
-    myPortInt = fromIntegral myPort :: Int
-  go uri s myPortInt
+  go uri s serverPort
  where
-  go uri s myPortInt = do
+  go uri s serverPort = do
     putStrLn $ "[Http.accept] started"
-    msg <- requestPostJson uri (brOurHost, myPortInt)
+    msg <- requestPostJson uri $ CommRequest serverPort
     putStrLn $ "[Http.accept] got " ++ show msg
     case msg of
-      MsgOkAddr ipv4 -> return (s, fromIpv4 ipv4)
-      MsgError Timeout -> go uri s myPortInt
+      MsgOkAddr ipv4 -> (s,) <$> fromIpv4 ipv4
+      MsgError Timeout -> go uri s serverPort
       MsgError NotBound -> do
         -- Broker was restarted and lost its internal state
         putStrLn "[Http.accept] Broker seems to have be restarted. Rebinding my address..."
         bind broker
-        go uri s myPortInt
+        go uri s serverPort
       MsgError err -> do
-        error $ "[Http.accept.go] " ++ show err
+        close s
+        throwIO $ userError $ "[Http.accept.go] " ++ show err
 
 connect :: Broker -> IO (Maybe (Socket, SockAddr))
 connect (Broker {..}) = do
-  (s, myPort) <- mkBoundUdpSock Nothing
+  (s, clientPort) <- mkBoundUdpSock Nothing
   let
-    myPortInt = fromIntegral myPort :: Int
     uri = brEndpoint ++ "/connect/" ++ brOurVAddr
   putStrLn $ "[Http.connect] started"
-  msg <- requestPostJson uri (brOurHost, myPortInt)
+  msg <- requestPostJson uri $ CommRequest clientPort
   putStrLn $ "[Http.connect] got " ++ show msg
   case msg of
-    MsgOkAddr ipv4 -> return $ Just (s, fromIpv4 ipv4)
+    MsgOkAddr ipv4 -> Just <$> ((s,) <$> fromIpv4 ipv4)
     MsgError NoAcceptor -> return Nothing
     MsgError err -> error $ "[Http.connect.go] " ++ show err
 

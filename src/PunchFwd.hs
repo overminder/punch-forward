@@ -4,6 +4,7 @@ import Control.Applicative
 import Control.Monad (forever, void)
 import Control.Exception (try, SomeException)
 import Network.Socket (withSocketsDo)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async)
 import Control.Concurrent.MVar
 import System.Environment
@@ -112,7 +113,10 @@ punchForward rcbOpt broker (PunchForward { pfServiceAction = Serve, .. }) = do
   forever $ do
     eiSockAddr <- try (BH.accept broker)
     case eiSockAddr of
-      Left (e :: SomeException) -> putStrLn $ "[main.accept] " ++ show e
+      Left (e :: SomeException) -> do
+        putStrLn $ "[main.accept] Retry after 1 sec. Reason: " ++ show e
+        -- Wait a while after the next retry
+        threadDelay 1000000
       Right sockAddr -> do
         putStrLn "[main] before punchSock"
         mbRawPeer <- SP.punchSock pfPeerId sockAddr punchTimeout

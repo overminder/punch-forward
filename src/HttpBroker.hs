@@ -48,13 +48,13 @@ myScottyApp broker = do
     vAddr <- param "vAddr"
     physAddr <- remotePunchAddr
     res <- liftIO $ connect broker vAddr physAddr
-    json $ toIpv4E res
+    json =<< (liftIO $ toIpv4E res)
 
   get "/accept/:vAddr/:ip/:port" $ do
     vAddr <- param "vAddr"
     physAddr <- remotePunchAddr
     res <- liftIO $ accept broker kAcceptWaitMicros vAddr physAddr
-    json $ toIpv4E res
+    json =<< (liftIO $ toIpv4E res)
 
 
 remoteHostNameForReq = do
@@ -69,11 +69,9 @@ remotePunchAddr = do
   port <- paramInt "port"
   return $ SockAddrInet (fromIntegral port) (fromIntegral host)
 
-noteEM :: e -> Either e (Maybe a) -> Either e a
-noteEM orElse = join . fmap (note orElse)
-
-toIpv4E :: Either ErrorCode SockAddr -> Msg
-toIpv4E = fmap (fmap MsgOkAddr . toIpv4) >>>
-          noteEM (Other "Not ipv4") >>>
-          either MsgError id
-
+toIpv4E :: Either ErrorCode SockAddr -> IO Msg
+toIpv4E eiRes = case eiRes of
+  Left e ->
+    return $ MsgError e
+  Right addr -> do
+    maybe (MsgError $ Other "not ipv4") MsgOkAddr <$> toIpv4 addr

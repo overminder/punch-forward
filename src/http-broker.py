@@ -5,6 +5,11 @@ from datetime import datetime
 import tornado.ioloop
 import tornado.web
 
+# This runs on heroku
+
+# listeners :: Map (v_addr :: str) (lastAccessDate :: datetime, [F])
+# type F = (client_addr :: (host :: str, port :: int))
+#       -> (server_addr :: (host :: str, port :: int))
 listeners = {}
 
 reactor = tornado.ioloop.IOLoop.instance()
@@ -33,6 +38,12 @@ class Index(tornado.web.RequestHandler):
 class List(tornado.web.RequestHandler):
     def get(self):
         self.write({k: str(t) for (k, (t, _)) in listeners.iteritems()})
+
+class Reflect(tornado.web.RequestHandler):
+    def get(self):
+        self.write({
+            'ip': self.request.remote_ip
+        })
 
 class Bind(tornado.web.RequestHandler):
     def post(self, v_addr):
@@ -63,11 +74,12 @@ class Accept(tornado.web.RequestHandler):
         if mb_f:
             return self.write_and_finish(error_response('AlreadyAccepting'))
 
-        my_addr = json.loads(self.request.body)
+        server_port = json.loads(self.request.body)['port']
+        server_ip = self.request.remote_ip
         def f((host, port)):
             reactor.remove_timeout(cancel_key)
             self.write_and_finish(addr_response(host, port))
-            return my_addr
+            return (server_ip, server_port)
         mb_f.append(f)
 
         def on_timeup():
@@ -86,13 +98,15 @@ class Connect(tornado.web.RequestHandler):
             return self.write(error_response('NoAcceptor'))
 
         f = mb_f.pop()
-        my_addr = json.loads(self.request.body)
-        (host, port) = f(my_addr)
-        self.write(addr_response(host, port))
+        client_port = json.loads(self.request.body)['port']
+        client_ip = self.request.remote_ip
+        server_addr = f((client_ip, client_port))
+        self.write(addr_response(*server_addr))
 
 routes = [
     (r'/', Index),
     (r'/list/', List),
+    (r'/reflect/', Reflect),
     (r'/bindListen/(.*)', Bind),
     (r'/accept/(.*)', Accept),
     (r'/connect/(.*)', Connect),
@@ -100,6 +114,6 @@ routes = [
 
 if __name__ == '__main__':
     app = tornado.web.Application(routes)
-    app.listen(int(os.environ.get('PORT', 5000)))
+    app.listen(int(os.environ.get('PORT', 5000)), xheaders=True)
     reactor.start()
 

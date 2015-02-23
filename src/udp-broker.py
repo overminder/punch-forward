@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# This runs on ihome
+
 import socket
 import struct
 from threading import Thread
