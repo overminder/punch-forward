@@ -68,11 +68,11 @@ newRcb opt@(ConnOption {..}) = do
   rcbRef <- newEmptyMVar
 
   -- Bounded buffers for inter-thread communications
-  fromApp <- P.spawn' (P.Bounded optTxBufferSize)
+  fromApp <- P.spawn' (P.bounded optTxBufferSize)
   -- This is unbounded: NIC's tx is controlled by the unacked packet count
-  toNic <- P.spawn' P.Unbounded
-  fromNic <- P.spawn' (P.Bounded optRxBufferSize)
-  toApp <- P.spawn' (P.Bounded optRxBufferSize)
+  toNic <- P.spawn' P.unbounded
+  fromNic <- P.spawn' (P.bounded optRxBufferSize)
+  toApp <- P.spawn' (P.bounded optRxBufferSize)
 
   tResend <- async $ runResend rcbRef
   tRecv <- async $ runRecv rcbRef

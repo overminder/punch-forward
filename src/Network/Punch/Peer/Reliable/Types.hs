@@ -4,7 +4,7 @@ import Control.Applicative ((<$>), (<*>))
 import Control.Concurrent.MVar
 import Control.Concurrent.Async (Async, async)
 import Control.Concurrent.STM (STM, TVar)
-import Control.DeepSeq (NFData)
+import Control.DeepSeq (NFData, rnf)
 import qualified Data.ByteString as B
 import qualified Data.Serialize as S
 import Data.Time
@@ -38,7 +38,8 @@ showPacket pkt@(Packet {..}) =
          pktSeqNo (show pktFlags) (B.length pktPayload)
 
 -- | For the strict map
-instance NFData Packet
+instance NFData Packet where
+  rnf x = x `seq` ()
 
 data PacketFlag
   = ACK
