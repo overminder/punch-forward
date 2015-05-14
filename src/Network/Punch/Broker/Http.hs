@@ -9,7 +9,7 @@ module Network.Punch.Broker.Http
   ) where
 
 import Control.Applicative ((<$>))
-import Control.Exception (throwIO)
+import Control.Exception (throwIO, try, SomeException)
 import System.IO.Error (userError)
 import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as A
@@ -56,19 +56,26 @@ accept broker@(Broker {..}) = do
  where
   go uri s serverPort = do
     putStrLn $ "[Http.accept] started"
-    msg <- requestPostJson uri $ CommRequest serverPort
-    putStrLn $ "[Http.accept] got " ++ show msg
-    case msg of
-      MsgOkAddr ipv4 -> (s,) <$> fromIpv4 ipv4
-      MsgError Timeout -> go uri s serverPort
-      MsgError NotBound -> do
-        -- Broker was restarted and lost its internal state
-        putStrLn "[Http.accept] Broker seems to have be restarted. Rebinding my address..."
-        bind broker
-        go uri s serverPort
-      MsgError err -> do
-        close s
-        throwIO $ userError $ "[Http.accept.go] " ++ show err
+    eiMsg <- try $ requestPostJson uri $ CommRequest serverPort
+    case eiMsg of
+      Left (connE :: SomeException) -> do
+        -- There seems to be a fd leak in `accept` in case of
+        -- network errors.
+        sClose s
+        throwIO connE
+      Right msg -> do
+        putStrLn $ "[Http.accept] got " ++ show msg
+        case msg of
+          MsgOkAddr ipv4 -> (s,) <$> fromIpv4 ipv4
+          MsgError Timeout -> go uri s serverPort
+          MsgError NotBound -> do
+            -- Broker was restarted and lost its internal state
+            putStrLn "[Http.accept] Broker seems to have be restarted. Rebinding my address..."
+            bind broker
+            go uri s serverPort
+          MsgError err -> do
+            close s
+            throwIO $ userError $ "[Http.accept.go] " ++ show err
 
 connect :: Broker -> IO (Maybe (Socket, SockAddr))
 connect (Broker {..}) = do
